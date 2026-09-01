@@ -38,17 +38,59 @@ class AsyncActionsProxy:
         return invoker
 
 
+class DocumentCollection:
+    def __init__(self, client: PGBoxClient, name: str):
+        self._client = client
+        self.name = name
+
+    def insert_one(self, doc: dict[str, Any]) -> ActionResponse:
+        return self._client.invoke_action(f"insert_{self.name}", doc)
+
+    def find(self, filter: Optional[dict[str, Any]] = None) -> ActionResponse:
+        return self._client.invoke_action(f"find_{self.name}", filter or {})
+
+    def update_one(self, filter: dict[str, Any], update: dict[str, Any]) -> ActionResponse:
+        return self._client.invoke_action(f"update_{self.name}", {"filter": filter, "update": update})
+
+    def delete_one(self, filter: dict[str, Any]) -> ActionResponse:
+        return self._client.invoke_action(f"delete_{self.name}", filter)
+
+
+class AsyncDocumentCollection:
+    def __init__(self, client: AsyncPGBoxClient, name: str):
+        self._client = client
+        self.name = name
+
+    async def insert_one(self, doc: dict[str, Any]) -> ActionResponse:
+        return await self._client.invoke_action(f"insert_{self.name}", doc)
+
+    async def find(self, filter: Optional[dict[str, Any]] = None) -> ActionResponse:
+        return await self._client.invoke_action(f"find_{self.name}", filter or {})
+
+    async def update_one(self, filter: dict[str, Any], update: dict[str, Any]) -> ActionResponse:
+        return await self._client.invoke_action(f"update_{self.name}", {"filter": filter, "update": update})
+
+    async def delete_one(self, filter: dict[str, Any]) -> ActionResponse:
+        return await self._client.invoke_action(f"delete_{self.name}", filter)
+
+
 class PGBoxClient:
+    """PGBox Client supporting direct dynamic method calls like `pgb.saveUser(params)`."""
+
     def __init__(
         self,
         api_key: Optional[str] = None,
-        endpoint: str = "https://cloud.pgboxhub.com",
-        database: str = "postgres",
+        endpoint: Optional[str] = None,
+        database: Optional[str] = None,
     ):
         self.api_key = api_key or os.environ.get("PGBOX_API_KEY")
-        self.endpoint = endpoint.rstrip("/")
-        self.database = database
+        self.endpoint = (endpoint or os.environ.get("PGBOX_ENDPOINT", "https://cloud.pgboxhub.com")).rstrip("/")
+        self.database = database or os.environ.get("PGBOX_DATABASE", "postgres")
         self.actions = ActionsProxy(self)
+
+    def collection(self, name: str) -> DocumentCollection:
+        """Access a document store collection."""
+        return DocumentCollection(self, name)
 
     def get_schema(self) -> dict[str, Any]:
         """Fetch the semantic schema JSON from PGBox."""
@@ -86,18 +128,30 @@ class PGBoxClient:
             res.raise_for_status()
             return ActionResponse.model_validate(res.json())
 
+    def __getattr__(self, name: str):
+        """Allow calling actions directly on the client instance, e.g. `pgb.saveUser(params)`."""
+        def invoker(params: Optional[dict[str, Any]] = None, dry_run: bool = False) -> ActionResponse:
+            return self.invoke_action(name, params or {}, dry_run=dry_run)
+        return invoker
+
 
 class AsyncPGBoxClient:
+    """Async PGBox Client supporting direct dynamic method calls like `await pgb.saveUser(params)`."""
+
     def __init__(
         self,
         api_key: Optional[str] = None,
-        endpoint: str = "https://cloud.pgboxhub.com",
-        database: str = "postgres",
+        endpoint: Optional[str] = None,
+        database: Optional[str] = None,
     ):
         self.api_key = api_key or os.environ.get("PGBOX_API_KEY")
-        self.endpoint = endpoint.rstrip("/")
-        self.database = database
+        self.endpoint = (endpoint or os.environ.get("PGBOX_ENDPOINT", "https://cloud.pgboxhub.com")).rstrip("/")
+        self.database = database or os.environ.get("PGBOX_DATABASE", "postgres")
         self.actions = AsyncActionsProxy(self)
+
+    def collection(self, name: str) -> AsyncDocumentCollection:
+        """Access an async document store collection."""
+        return AsyncDocumentCollection(self, name)
 
     async def get_schema(self) -> dict[str, Any]:
         """Fetch the semantic schema JSON asynchronously."""
@@ -134,3 +188,14 @@ class AsyncPGBoxClient:
             res = await http.post(url, json=payload, headers=headers)
             res.raise_for_status()
             return ActionResponse.model_validate(res.json())
+
+    def __getattr__(self, name: str):
+        """Allow calling actions directly on the async client instance, e.g. `await pgb.saveUser(params)`."""
+        async def invoker(params: Optional[dict[str, Any]] = None, dry_run: bool = False) -> ActionResponse:
+            return await self.invoke_action(name, params or {}, dry_run=dry_run)
+        return invoker
+
+
+# Singleton shorthand instance
+pgb = PGBoxClient()
+PGBox = PGBoxClient
