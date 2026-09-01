@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pgbox"
+version = "1.0.0"
+description = "Official Python SDK & CLI for PGBox Cloud (FastAPI / Pydantic / SQLAlchemy)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Hydratik", email = "engineering@pgboxhub.com" }]
+dependencies = [
+    "httpx>=0.24.0",
+    "pydantic>=2.0.0",
+]
+
+[project.urls]
+Homepage = "https://cloud.pgboxhub.com"
+Repository = "https://github.com/Hydratik/pgbox-py"
+
+[project.scripts]
+pgbox = "pgbox.cli:main"
