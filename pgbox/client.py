@@ -74,8 +74,142 @@ class AsyncDocumentCollection:
         return await self._client.invoke_action(f"delete_{self.name}", filter)
 
 
+class TableClient:
+    """Synchronous typed table accessor supporting find, find_one, create, update, delete, and count."""
+
+    def __init__(self, client: PGBoxClient, table_name: str):
+        self._client = client
+        self.table_name = table_name
+
+    def find(
+        self,
+        filter: Optional[dict[str, Any]] = None,
+        limit: int = 100,
+        offset: int = 0,
+        order_by: Optional[str] = None,
+        order: str = "ASC",
+    ) -> list[dict[str, Any]]:
+        """Find records matching filter."""
+        res = self._client.request(
+            "/v1/data/find",
+            {
+                "table": self.table_name,
+                "filter": filter or {},
+                "limit": limit,
+                "offset": offset,
+                "orderBy": order_by,
+                "order": order,
+            },
+        )
+        return res.get("rows", [])
+
+    def find_one(self, filter: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
+        """Find first single record matching filter."""
+        rows = self.find(filter=filter, limit=1)
+        return rows[0] if rows else None
+
+    def create(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Insert a record and return the inserted row."""
+        res = self._client.request("/v1/data/insert", {"table": self.table_name, "data": data})
+        return res.get("row", data)
+
+    def insert_one(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Alias for create."""
+        return self.create(data)
+
+    def update(self, filter: dict[str, Any], data: dict[str, Any]) -> list[dict[str, Any]]:
+        """Update records matching filter."""
+        res = self._client.request(
+            "/v1/data/update",
+            {"table": self.table_name, "filter": filter, "data": data},
+        )
+        return res.get("rows", [])
+
+    def delete(self, filter: dict[str, Any]) -> dict[str, Any]:
+        """Delete records matching filter."""
+        return self._client.request(
+            "/v1/data/delete",
+            {"table": self.table_name, "filter": filter},
+        )
+
+    def count(self, filter: Optional[dict[str, Any]] = None) -> int:
+        """Count records matching filter."""
+        res = self._client.request(
+            "/v1/data/count",
+            {"table": self.table_name, "filter": filter or {}},
+        )
+        return res.get("count", 0)
+
+
+class AsyncTableClient:
+    """Asynchronous typed table accessor."""
+
+    def __init__(self, client: AsyncPGBoxClient, table_name: str):
+        self._client = client
+        self.table_name = table_name
+
+    async def find(
+        self,
+        filter: Optional[dict[str, Any]] = None,
+        limit: int = 100,
+        offset: int = 0,
+        order_by: Optional[str] = None,
+        order: str = "ASC",
+    ) -> list[dict[str, Any]]:
+        """Find records matching filter asynchronously."""
+        res = await self._client.request(
+            "/v1/data/find",
+            {
+                "table": self.table_name,
+                "filter": filter or {},
+                "limit": limit,
+                "offset": offset,
+                "orderBy": order_by,
+                "order": order,
+            },
+        )
+        return res.get("rows", [])
+
+    async def find_one(self, filter: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
+        """Find first single record matching filter."""
+        rows = await self.find(filter=filter, limit=1)
+        return rows[0] if rows else None
+
+    async def create(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Insert a record and return the inserted row."""
+        res = await self._client.request("/v1/data/insert", {"table": self.table_name, "data": data})
+        return res.get("row", data)
+
+    async def insert_one(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Alias for create."""
+        return await self.create(data)
+
+    async def update(self, filter: dict[str, Any], data: dict[str, Any]) -> list[dict[str, Any]]:
+        """Update records matching filter."""
+        res = await self._client.request(
+            "/v1/data/update",
+            {"table": self.table_name, "filter": filter, "data": data},
+        )
+        return res.get("rows", [])
+
+    async def delete(self, filter: dict[str, Any]) -> dict[str, Any]:
+        """Delete records matching filter."""
+        return await self._client.request(
+            "/v1/data/delete",
+            {"table": self.table_name, "filter": filter},
+        )
+
+    async def count(self, filter: Optional[dict[str, Any]] = None) -> int:
+        """Count records matching filter."""
+        res = await self._client.request(
+            "/v1/data/count",
+            {"table": self.table_name, "filter": filter or {}},
+        )
+        return res.get("count", 0)
+
+
 class PGBoxClient:
-    """PGBox Client supporting direct dynamic method calls like `pgb.saveUser(params)`."""
+    """PGBox Client supporting direct dynamic table models and action invocations."""
 
     def __init__(
         self,
@@ -88,9 +222,25 @@ class PGBoxClient:
         self.database = database or os.environ.get("PGBOX_DATABASE", "postgres")
         self.actions = ActionsProxy(self)
 
+    def table(self, name: str) -> TableClient:
+        """Access a typed table model accessor."""
+        return TableClient(self, name)
+
     def collection(self, name: str) -> DocumentCollection:
         """Access a document store collection."""
         return DocumentCollection(self, name)
+
+    def request(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Make an authenticated request to PGBox."""
+        url = f"{self.endpoint}{path if path.startswith('/') else '/' + path}"
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        data = {**payload, "dbname": self.database}
+        with httpx.Client(timeout=15.0) as http:
+            res = http.post(url, json=data, headers=headers)
+            res.raise_for_status()
+            return res.json()
 
     def get_schema(self) -> dict[str, Any]:
         """Fetch the semantic schema JSON from PGBox."""
@@ -111,32 +261,21 @@ class PGBoxClient:
         dry_run: bool = False,
     ) -> ActionResponse:
         """Invoke an action synchronously."""
-        url = f"{self.endpoint}/v1/actions/invoke"
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
-        payload = {
-            "action": action_name,
-            "params": params,
-            "dry_run": dry_run,
-            "dbname": self.database,
-        }
-
-        with httpx.Client(timeout=15.0) as http:
-            res = http.post(url, json=payload, headers=headers)
-            res.raise_for_status()
-            return ActionResponse.model_validate(res.json())
+        res_data = self.request(
+            "/v1/actions/invoke",
+            {"action": action_name, "params": params, "dry_run": dry_run},
+        )
+        return ActionResponse.model_validate(res_data)
 
     def __getattr__(self, name: str):
-        """Allow calling actions directly on the client instance, e.g. `pgb.saveUser(params)`."""
-        def invoker(params: Optional[dict[str, Any]] = None, dry_run: bool = False) -> ActionResponse:
-            return self.invoke_action(name, params or {}, dry_run=dry_run)
-        return invoker
+        """Allow calling tables e.g. `client.user.find(...)` or actions e.g. `client.saveUser(params)`."""
+        # Return a TableClient that also functions as an action invoker if called directly
+        table_c = self.table(name)
+        return table_c
 
 
 class AsyncPGBoxClient:
-    """Async PGBox Client supporting direct dynamic method calls like `await pgb.saveUser(params)`."""
+    """Async PGBox Client supporting dynamic table models and actions."""
 
     def __init__(
         self,
@@ -149,9 +288,25 @@ class AsyncPGBoxClient:
         self.database = database or os.environ.get("PGBOX_DATABASE", "postgres")
         self.actions = AsyncActionsProxy(self)
 
+    def table(self, name: str) -> AsyncTableClient:
+        """Access an async typed table model accessor."""
+        return AsyncTableClient(self, name)
+
     def collection(self, name: str) -> AsyncDocumentCollection:
         """Access an async document store collection."""
         return AsyncDocumentCollection(self, name)
+
+    async def request(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Make an authenticated async request to PGBox."""
+        url = f"{self.endpoint}{path if path.startswith('/') else '/' + path}"
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        data = {**payload, "dbname": self.database}
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            res = await http.post(url, json=data, headers=headers)
+            res.raise_for_status()
+            return res.json()
 
     async def get_schema(self) -> dict[str, Any]:
         """Fetch the semantic schema JSON asynchronously."""
@@ -172,28 +327,15 @@ class AsyncPGBoxClient:
         dry_run: bool = False,
     ) -> ActionResponse:
         """Invoke an action asynchronously."""
-        url = f"{self.endpoint}/v1/actions/invoke"
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
-        payload = {
-            "action": action_name,
-            "params": params,
-            "dry_run": dry_run,
-            "dbname": self.database,
-        }
-
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            res = await http.post(url, json=payload, headers=headers)
-            res.raise_for_status()
-            return ActionResponse.model_validate(res.json())
+        res_data = await self.request(
+            "/v1/actions/invoke",
+            {"action": action_name, "params": params, "dry_run": dry_run},
+        )
+        return ActionResponse.model_validate(res_data)
 
     def __getattr__(self, name: str):
-        """Allow calling actions directly on the async client instance, e.g. `await pgb.saveUser(params)`."""
-        async def invoker(params: Optional[dict[str, Any]] = None, dry_run: bool = False) -> ActionResponse:
-            return await self.invoke_action(name, params or {}, dry_run=dry_run)
-        return invoker
+        """Allow calling async tables e.g. `await client.user.find(...)`."""
+        return self.table(name)
 
 
 # Singleton shorthand instance
