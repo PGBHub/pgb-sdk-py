@@ -2,20 +2,46 @@
 
 from __future__ import annotations
 
+import json
 import os
+import urllib.request
+import urllib.error
 from typing import Any, Optional
-import httpx
-from pydantic import BaseModel
+
+try:
+    import httpx
+except ImportError:
+    httpx = None  # type: ignore
+
+try:
+    from pydantic import BaseModel
+except ImportError:
+    class BaseModel:  # type: ignore
+        def __init__(self, **data: Any):
+            for k, v in data.items():
+                setattr(self, k, v)
+
+        @classmethod
+        def model_validate(cls, data: Any):
+            if isinstance(data, cls):
+                return data
+            if isinstance(data, dict):
+                return cls(**data)
+            return data
+
+        def dict(self) -> dict[str, Any]:
+            return self.__dict__
 
 
 class ActionResponse(BaseModel):
-    action: str
-    status: str
-    dry_run: bool
-    duration_ms: float
-    results: Any
+    action: str = ""
+    status: str = "completed"
+    dry_run: bool = False
+    duration_ms: float = 0.0
+    results: Any = None
     outbox_id: Optional[int] = None
     message: Optional[str] = None
+
 
 
 class ActionsProxy:
@@ -237,10 +263,21 @@ class PGBoxClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         data = {**payload, "dbname": self.database}
-        with httpx.Client(timeout=15.0) as http:
-            res = http.post(url, json=data, headers=headers)
-            res.raise_for_status()
-            return res.json()
+
+        if httpx is not None:
+            with httpx.Client(timeout=15.0) as http:
+                res = http.post(url, json=data, headers=headers)
+                res.raise_for_status()
+                return res.json()
+        else:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(data).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15.0) as resp:
+                return json.loads(resp.read().decode("utf-8"))
 
     def get_schema(self) -> dict[str, Any]:
         """Fetch the semantic schema JSON from PGBox."""
@@ -249,10 +286,15 @@ class PGBoxClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        with httpx.Client(timeout=10.0) as http:
-            res = http.get(url, headers=headers)
-            res.raise_for_status()
-            return res.json()
+        if httpx is not None:
+            with httpx.Client(timeout=10.0) as http:
+                res = http.get(url, headers=headers)
+                res.raise_for_status()
+                return res.json()
+        else:
+            req = urllib.request.Request(url, headers=headers, method="GET")
+            with urllib.request.urlopen(req, timeout=10.0) as resp:
+                return json.loads(resp.read().decode("utf-8"))
 
     def invoke_action(
         self,
