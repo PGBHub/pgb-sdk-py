@@ -62,11 +62,40 @@ async def approve(order_id: str):
 
 ---
 
-## Pydantic Model Generation (`pgbox pull`)
+## Local vs. Cloud: Seamless Switching
+
+The exact same `pgbox` client code works identically against **local PostgreSQL** (Docker / offline) and **PGBox Cloud**:
+
+```python
+import os
+from pgbox import PGBoxClient
+
+# 1-env switch:
+# Local:      DATABASE_URL="postgresql://postgres:postgres@localhost:5432/myapp"
+# Production: PGBOX_ENDPOINT="https://pgbox.motoriqhub.com" PGBOX_API_KEY="pgb_live_..."
+client = PGBoxClient(
+    endpoint=os.getenv("PGBOX_ENDPOINT"),
+    api_key=os.getenv("PGBOX_API_KEY"),
+    db_url=os.getenv("DATABASE_URL"),
+    database="myapp"
+)
+```
+
+---
+
+## Deterministic Pydantic Model Generation (Zero AI Tokens)
+
+Run the CLI in your project to pull the live schema from your local or cloud database and deterministically generate Pydantic v2 models without spending a single AI token:
 
 ```bash
 pgbox pull --db my_database --out models.py
 ```
+
+---
+
+## Comprehensive Developer & AI Agent Guide
+
+For detailed documentation, architectural diagrams, LLM agent tool definitions, and copy-pastable recipes, see the **[PGBox Master Developer & AI Agent Guide](file:///Users/alveis/Projects/Hydratik/pgbox/PGB_DEVELOPER_GUIDE.md)**.
 
 ---
 
