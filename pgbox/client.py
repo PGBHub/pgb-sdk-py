@@ -234,6 +234,112 @@ class AsyncTableClient:
         return res.get("count", 0)
 
 
+class FunctionsClient:
+    """Synchronous client for invoking and managing PGBox Serverless Cloud Functions."""
+
+    def __init__(self, client: PGBoxClient):
+        self._client = client
+
+    def invoke(
+        self,
+        name: str,
+        payload: Any = None,
+        headers: Optional[dict[str, str]] = None,
+        query: Optional[dict[str, str]] = None,
+    ) -> Any:
+        """Invoke a serverless cloud function."""
+        query_str = ""
+        if query:
+            import urllib.parse
+            query_str = f"?{urllib.parse.urlencode(query)}"
+
+        url = f"{self._client.endpoint}/api/v1/databases/{self._client.database}/functions/{name}/invoke{query_str}"
+        req_headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self._client.api_key:
+            req_headers["Authorization"] = f"Bearer {self._client.api_key}"
+        if headers:
+            req_headers.update(headers)
+
+        data = payload if payload is not None else {}
+
+        if httpx is not None:
+            with httpx.Client(timeout=30.0) as http:
+                res = http.post(url, json=data, headers=req_headers)
+                res.raise_for_status()
+                return res.json()
+        else:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(data).encode("utf-8"),
+                headers=req_headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30.0) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+
+    def list(self) -> list[dict[str, Any]]:
+        """List all cloud functions in the target database."""
+        url = f"{self._client.endpoint}/api/v1/databases/{self._client.database}/functions"
+        headers = {"Accept": "application/json"}
+        if self._client.api_key:
+            headers["Authorization"] = f"Bearer {self._client.api_key}"
+
+        if httpx is not None:
+            with httpx.Client(timeout=10.0) as http:
+                res = http.get(url, headers=headers)
+                res.raise_for_status()
+                return res.json().get("functions", [])
+        else:
+            req = urllib.request.Request(url, headers=headers, method="GET")
+            with urllib.request.urlopen(req, timeout=10.0) as resp:
+                return json.loads(resp.read().decode("utf-8")).get("functions", [])
+
+
+class AsyncFunctionsClient:
+    """Asynchronous client for invoking and managing PGBox Serverless Cloud Functions."""
+
+    def __init__(self, client: AsyncPGBoxClient):
+        self._client = client
+
+    async def invoke(
+        self,
+        name: str,
+        payload: Any = None,
+        headers: Optional[dict[str, str]] = None,
+        query: Optional[dict[str, str]] = None,
+    ) -> Any:
+        """Invoke a serverless cloud function asynchronously."""
+        query_str = ""
+        if query:
+            import urllib.parse
+            query_str = f"?{urllib.parse.urlencode(query)}"
+
+        url = f"{self._client.endpoint}/api/v1/databases/{self._client.database}/functions/{name}/invoke{query_str}"
+        req_headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self._client.api_key:
+            req_headers["Authorization"] = f"Bearer {self._client.api_key}"
+        if headers:
+            req_headers.update(headers)
+
+        data = payload if payload is not None else {}
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            res = await http.post(url, json=data, headers=req_headers)
+            res.raise_for_status()
+            return res.json()
+
+    async def list(self) -> list[dict[str, Any]]:
+        """List all cloud functions asynchronously."""
+        url = f"{self._client.endpoint}/api/v1/databases/{self._client.database}/functions"
+        headers = {"Accept": "application/json"}
+        if self._client.api_key:
+            headers["Authorization"] = f"Bearer {self._client.api_key}"
+
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            res = await http.get(url, headers=headers)
+            res.raise_for_status()
+            return res.json().get("functions", [])
+
+
 class PGBoxClient:
     """PGBox Client supporting direct dynamic table models and action invocations."""
 
@@ -247,6 +353,7 @@ class PGBoxClient:
         self.endpoint = (endpoint or os.environ.get("PGBOX_ENDPOINT", "https://cloud.pgboxhub.com")).rstrip("/")
         self.database = database or os.environ.get("PGBOX_DATABASE", "postgres")
         self.actions = ActionsProxy(self)
+        self.functions = FunctionsClient(self)
 
     def table(self, name: str) -> TableClient:
         """Access a typed table model accessor."""
@@ -329,6 +436,7 @@ class AsyncPGBoxClient:
         self.endpoint = (endpoint or os.environ.get("PGBOX_ENDPOINT", "https://cloud.pgboxhub.com")).rstrip("/")
         self.database = database or os.environ.get("PGBOX_DATABASE", "postgres")
         self.actions = AsyncActionsProxy(self)
+        self.functions = AsyncFunctionsClient(self)
 
     def table(self, name: str) -> AsyncTableClient:
         """Access an async typed table model accessor."""
