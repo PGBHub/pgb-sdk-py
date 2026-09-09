@@ -72,7 +72,7 @@ from pgbox import PGBoxClient
 
 # 1-env switch:
 # Local:      DATABASE_URL="postgresql://postgres:postgres@localhost:5432/myapp"
-# Production: PGBOX_ENDPOINT="https://pgbox.motoriqhub.com" PGBOX_API_KEY="pgb_live_..."
+# Production: PGBOX_ENDPOINT="https://console.pgbhub.com" PGBOX_API_KEY="pgb_live_..."
 client = PGBoxClient(
     endpoint=os.getenv("PGBOX_ENDPOINT"),
     api_key=os.getenv("PGBOX_API_KEY"),
