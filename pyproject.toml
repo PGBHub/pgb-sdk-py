@@ -9,15 +9,15 @@ description = "Official Python SDK & CLI for PGBox Cloud (FastAPI / Pydantic / S
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "Hydratik", email = "engineering@pgboxhub.com" }]
+authors = [{ name = "Hydratik", email = "engineering@pgbhub.com" }]
 dependencies = [
     "httpx>=0.24.0",
     "pydantic>=2.0.0",
 ]
 
 [project.urls]
-Homepage = "https://cloud.pgboxhub.com"
-Repository = "https://github.com/Hydratik/pgbox-py"
+Homepage = "https://console.pgbhub.com"
+Repository = "https://github.com/PGBHub/pgbox-sdk-py"
 
 [project.scripts]
 pgbox = "pgbox.cli:main"
