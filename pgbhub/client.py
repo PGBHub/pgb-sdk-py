@@ -1,4 +1,4 @@
-"""Official PGBox Python Client SDK."""
+"""Official PGBHub Python Client SDK."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ class ActionResponse(BaseModel):
 
 
 class ActionsProxy:
-    def __init__(self, client: PGBoxClient):
+    def __init__(self, client: PGBHubClient):
         self._client = client
 
     def __getattr__(self, name: str):
@@ -55,7 +55,7 @@ class ActionsProxy:
 
 
 class AsyncActionsProxy:
-    def __init__(self, client: AsyncPGBoxClient):
+    def __init__(self, client: AsyncPGBHubClient):
         self._client = client
 
     def __getattr__(self, name: str):
@@ -65,7 +65,7 @@ class AsyncActionsProxy:
 
 
 class DocumentCollection:
-    def __init__(self, client: PGBoxClient, name: str):
+    def __init__(self, client: PGBHubClient, name: str):
         self._client = client
         self.name = name
 
@@ -83,7 +83,7 @@ class DocumentCollection:
 
 
 class AsyncDocumentCollection:
-    def __init__(self, client: AsyncPGBoxClient, name: str):
+    def __init__(self, client: AsyncPGBHubClient, name: str):
         self._client = client
         self.name = name
 
@@ -103,7 +103,7 @@ class AsyncDocumentCollection:
 class TableClient:
     """Synchronous typed table accessor supporting find, find_one, create, update, delete, and count."""
 
-    def __init__(self, client: PGBoxClient, table_name: str):
+    def __init__(self, client: PGBHubClient, table_name: str):
         self._client = client
         self.table_name = table_name
 
@@ -170,7 +170,7 @@ class TableClient:
 class AsyncTableClient:
     """Asynchronous typed table accessor."""
 
-    def __init__(self, client: AsyncPGBoxClient, table_name: str):
+    def __init__(self, client: AsyncPGBHubClient, table_name: str):
         self._client = client
         self.table_name = table_name
 
@@ -235,9 +235,9 @@ class AsyncTableClient:
 
 
 class FunctionsClient:
-    """Synchronous client for invoking and managing PGBox Serverless Cloud Functions."""
+    """Synchronous client for invoking and managing PGBHub Serverless Cloud Functions."""
 
-    def __init__(self, client: PGBoxClient):
+    def __init__(self, client: PGBHubClient):
         self._client = client
 
     def invoke(
@@ -296,9 +296,9 @@ class FunctionsClient:
 
 
 class AsyncFunctionsClient:
-    """Asynchronous client for invoking and managing PGBox Serverless Cloud Functions."""
+    """Asynchronous client for invoking and managing PGBHub Serverless Cloud Functions."""
 
-    def __init__(self, client: AsyncPGBoxClient):
+    def __init__(self, client: AsyncPGBHubClient):
         self._client = client
 
     async def invoke(
@@ -340,8 +340,8 @@ class AsyncFunctionsClient:
             return res.json().get("functions", [])
 
 
-class PGBoxClient:
-    """PGBox Client supporting direct dynamic table models and action invocations."""
+class PGBHubClient:
+    """PGBHub Client supporting direct dynamic table models and action invocations."""
 
     def __init__(
         self,
@@ -349,9 +349,9 @@ class PGBoxClient:
         endpoint: Optional[str] = None,
         database: Optional[str] = None,
     ):
-        self.api_key = api_key or os.environ.get("PGBOX_API_KEY")
-        self.endpoint = (endpoint or os.environ.get("PGBOX_ENDPOINT", "https://cloud.pgboxhub.com")).rstrip("/")
-        self.database = database or os.environ.get("PGBOX_DATABASE", "postgres")
+        self.api_key = api_key or os.environ.get("PGBHUB_API_KEY")
+        self.endpoint = (endpoint or os.environ.get("PGBHUB_ENDPOINT", "https://cloud.pgbhub.com")).rstrip("/")
+        self.database = database or os.environ.get("PGBHUB_DATABASE", "postgres")
         self.actions = ActionsProxy(self)
         self.functions = FunctionsClient(self)
 
@@ -364,7 +364,7 @@ class PGBoxClient:
         return DocumentCollection(self, name)
 
     def request(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Make an authenticated request to PGBox."""
+        """Make an authenticated request to PGBHub."""
         url = f"{self.endpoint}{path if path.startswith('/') else '/' + path}"
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if self.api_key:
@@ -387,7 +387,7 @@ class PGBoxClient:
                 return json.loads(resp.read().decode("utf-8"))
 
     def get_schema(self) -> dict[str, Any]:
-        """Fetch the semantic schema JSON from PGBox."""
+        """Fetch the semantic schema JSON from PGBHub."""
         url = f"{self.endpoint}/api/v1/databases/{self.database}/schema.json"
         headers = {"Accept": "application/json"}
         if self.api_key:
@@ -423,8 +423,8 @@ class PGBoxClient:
         return table_c
 
 
-class AsyncPGBoxClient:
-    """Async PGBox Client supporting dynamic table models and actions."""
+class AsyncPGBHubClient:
+    """Async PGBHub Client supporting dynamic table models and actions."""
 
     def __init__(
         self,
@@ -432,9 +432,9 @@ class AsyncPGBoxClient:
         endpoint: Optional[str] = None,
         database: Optional[str] = None,
     ):
-        self.api_key = api_key or os.environ.get("PGBOX_API_KEY")
-        self.endpoint = (endpoint or os.environ.get("PGBOX_ENDPOINT", "https://cloud.pgboxhub.com")).rstrip("/")
-        self.database = database or os.environ.get("PGBOX_DATABASE", "postgres")
+        self.api_key = api_key or os.environ.get("PGBHUB_API_KEY")
+        self.endpoint = (endpoint or os.environ.get("PGBHUB_ENDPOINT", "https://cloud.pgbhub.com")).rstrip("/")
+        self.database = database or os.environ.get("PGBHUB_DATABASE", "postgres")
         self.actions = AsyncActionsProxy(self)
         self.functions = AsyncFunctionsClient(self)
 
@@ -447,7 +447,7 @@ class AsyncPGBoxClient:
         return AsyncDocumentCollection(self, name)
 
     async def request(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Make an authenticated async request to PGBox."""
+        """Make an authenticated async request to PGBHub."""
         url = f"{self.endpoint}{path if path.startswith('/') else '/' + path}"
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if self.api_key:
@@ -489,5 +489,5 @@ class AsyncPGBoxClient:
 
 
 # Singleton shorthand instance
-pgb = PGBoxClient()
-PGBox = PGBoxClient
+pgb = PGBHubClient()
+PGBHub = PGBHubClient

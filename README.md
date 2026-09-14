@@ -1,11 +1,11 @@
-# pgbox (Python SDK & CLI)
+# pgbhub (Python SDK & CLI)
 
-Official Python client SDK and CLI for **PGBox Cloud**. Compatible with FastAPI, Pydantic, SQLAlchemy, and Psycopg 3.
+Official Python client SDK and CLI for **PGBHub Cloud**. Compatible with FastAPI, Pydantic, SQLAlchemy, and Psycopg 3.
 
 ## Installation
 
 ```bash
-pip install pgbox
+pip install pgbhub
 ```
 
 ## Developer Paradigms
@@ -13,11 +13,11 @@ pip install pgbox
 ### 1. Typed Table Models (ORM / Query Paradigm)
 
 ```python
-from pgbox import PGBoxClient
+from pgbhub import PGBHubClient
 
-client = PGBoxClient(
+client = PGBHubClient(
     api_key="your_api_key",
-    endpoint="https://cloud.pgboxhub.com",
+    endpoint="https://cloud.pgbhub.com",
     database="my_database"
 )
 
@@ -46,10 +46,10 @@ User.delete(filter={"id": "8ef5-492a-bb81"})
 
 ```python
 from fastapi import FastAPI
-from pgbox import AsyncPGBoxClient
+from pgbhub import AsyncPGBHubClient
 
 app = FastAPI()
-client = AsyncPGBoxClient(api_key="...")
+client = AsyncPGBHubClient(api_key="...")
 
 @app.get("/users/{user_id}")
 async def get_user(user_id: str):
@@ -64,18 +64,18 @@ async def approve(order_id: str):
 
 ## Local vs. Cloud: Seamless Switching
 
-The exact same `pgbox` client code works identically against **local PostgreSQL** (Docker / offline) and **PGBox Cloud**:
+The exact same `pgbhub` client code works identically against **local PostgreSQL** (Docker / offline) and **PGBHub Cloud**:
 
 ```python
 import os
-from pgbox import PGBoxClient
+from pgbhub import PGBHubClient
 
 # 1-env switch:
 # Local:      DATABASE_URL="postgresql://postgres:postgres@localhost:5432/myapp"
-# Production: PGBOX_ENDPOINT="https://console.pgbhub.com" PGBOX_API_KEY="pgb_live_..."
-client = PGBoxClient(
-    endpoint=os.getenv("PGBOX_ENDPOINT"),
-    api_key=os.getenv("PGBOX_API_KEY"),
+# Production: PGBHUB_ENDPOINT="https://console.pgbhub.com" PGBHUB_API_KEY="pgb_live_..."
+client = PGBHubClient(
+    endpoint=os.getenv("PGBHUB_ENDPOINT"),
+    api_key=os.getenv("PGBHUB_API_KEY"),
     db_url=os.getenv("DATABASE_URL"),
     database="myapp"
 )
@@ -88,14 +88,14 @@ client = PGBoxClient(
 Run the CLI in your project to pull the live schema from your local or cloud database and deterministically generate Pydantic v2 models without spending a single AI token:
 
 ```bash
-pgbox pull --db my_database --out models.py
+pgbhub pull --db my_database --out models.py
 ```
 
 ---
 
 ## Comprehensive Developer & AI Agent Guide
 
-For detailed documentation, architectural diagrams, LLM agent tool definitions, and copy-pastable recipes, see the **[PGBox Master Developer & AI Agent Guide](file:///Users/alveis/Projects/Hydratik/pgbox/PGB_DEVELOPER_GUIDE.md)**.
+For detailed documentation, architectural diagrams, LLM agent tool definitions, and copy-pastable recipes, see the **[PGBHub Master Developer & AI Agent Guide](file:///Users/alveis/Projects/Hydratik/pgbhub/PGB_DEVELOPER_GUIDE.md)**.
 
 ---
 
