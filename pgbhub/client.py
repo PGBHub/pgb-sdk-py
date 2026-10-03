@@ -6,6 +6,7 @@ import json
 import os
 import urllib.request
 import urllib.error
+import urllib.parse
 from typing import Any, Optional
 
 try:
@@ -867,6 +868,513 @@ class AsyncFunctionsClient:
             return bool(res.json().get("success"))
 
 
+class CronClient:
+    """Scheduled (cron) job management (`client.cron`), addressed by
+    database name. target_config's shape depends on target_type:
+    function -> {function_name, payload}, sql -> {sql},
+    action -> {action_name, params}, http -> {url, method, body?},
+    mail -> {to, subject, body}.
+    """
+
+    def __init__(self, client: PGBHubClient):
+        self._client = client
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self._client.api_key:
+            headers["Authorization"] = f"Bearer {self._client.api_key}"
+        return headers
+
+    @property
+    def _base(self) -> str:
+        return f"{self._client.endpoint}/api/v1/databases/{self._client.database}/crons"
+
+    def list(self) -> list[dict[str, Any]]:
+        """List scheduled cron jobs."""
+        if httpx is not None:
+            with httpx.Client(timeout=15.0) as http:
+                res = http.get(self._base, headers=self._headers())
+                res.raise_for_status()
+                return res.json().get("crons", [])
+        req = urllib.request.Request(self._base, headers=self._headers(), method="GET")
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            return json.loads(resp.read().decode("utf-8")).get("crons", [])
+
+    def create(self, name: str, expression: str, target_type: str, target_config: dict[str, Any], **options: Any) -> dict[str, Any]:
+        """Create a scheduled cron job. `options` may include description,
+        timezone, is_enabled, concurrency_policy, timeout_seconds,
+        max_retries, retry_delay_seconds."""
+        body = {"name": name, "expression": expression, "target_type": target_type, "target_config": target_config, **options}
+        if httpx is not None:
+            with httpx.Client(timeout=15.0) as http:
+                res = http.post(self._base, json=body, headers=self._headers())
+                res.raise_for_status()
+                return res.json()
+        req = urllib.request.Request(self._base, data=json.dumps(body).encode("utf-8"), headers=self._headers(), method="POST")
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def toggle(self, cron_id: str, enabled: bool) -> dict[str, Any]:
+        """Enable or disable a cron job."""
+        url = f"{self._base}/{cron_id}/toggle"
+        body = {"enabled": enabled}
+        if httpx is not None:
+            with httpx.Client(timeout=15.0) as http:
+                res = http.post(url, json=body, headers=self._headers())
+                res.raise_for_status()
+                return res.json()
+        req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=self._headers(), method="POST")
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def run(self, cron_id: str) -> dict[str, Any]:
+        """Manually trigger a cron job to run immediately."""
+        url = f"{self._base}/{cron_id}/run"
+        if httpx is not None:
+            with httpx.Client(timeout=40.0) as http:
+                res = http.post(url, headers=self._headers())
+                res.raise_for_status()
+                return res.json()
+        req = urllib.request.Request(url, headers=self._headers(), method="POST")
+        with urllib.request.urlopen(req, timeout=40.0) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def delete(self, cron_id: str) -> bool:
+        """Delete a cron job."""
+        url = f"{self._base}/{cron_id}"
+        if httpx is not None:
+            with httpx.Client(timeout=15.0) as http:
+                res = http.delete(url, headers=self._headers())
+                res.raise_for_status()
+                return bool(res.json().get("deleted"))
+        req = urllib.request.Request(url, headers=self._headers(), method="DELETE")
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            return bool(json.loads(resp.read().decode("utf-8")).get("deleted"))
+
+    def list_runs(self, cron_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        """List recent run history for a cron job."""
+        url = f"{self._base}/{cron_id}/runs?limit={limit}"
+        if httpx is not None:
+            with httpx.Client(timeout=15.0) as http:
+                res = http.get(url, headers=self._headers())
+                res.raise_for_status()
+                return res.json().get("runs", [])
+        req = urllib.request.Request(url, headers=self._headers(), method="GET")
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            return json.loads(resp.read().decode("utf-8")).get("runs", [])
+
+    def update(self, cron_id: str, **updates: Any) -> dict[str, Any]:
+        """Update a cron job's configuration (name, description,
+        expression, timezone, concurrency_policy, timeout_seconds,
+        max_retries, target_type, target_config)."""
+        url = f"{self._base}/{cron_id}"
+        if httpx is not None:
+            with httpx.Client(timeout=15.0) as http:
+                res = http.request("PATCH", url, json=updates, headers=self._headers())
+                res.raise_for_status()
+                return res.json()
+        req = urllib.request.Request(url, data=json.dumps(updates).encode("utf-8"), headers=self._headers(), method="PATCH")
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+
+class AsyncCronClient:
+    """Async counterpart of CronClient."""
+
+    def __init__(self, client: AsyncPGBHubClient):
+        self._client = client
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self._client.api_key:
+            headers["Authorization"] = f"Bearer {self._client.api_key}"
+        return headers
+
+    @property
+    def _base(self) -> str:
+        return f"{self._client.endpoint}/api/v1/databases/{self._client.database}/crons"
+
+    async def list(self) -> list[dict[str, Any]]:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            res = await http.get(self._base, headers=self._headers())
+            res.raise_for_status()
+            return res.json().get("crons", [])
+
+    async def create(self, name: str, expression: str, target_type: str, target_config: dict[str, Any], **options: Any) -> dict[str, Any]:
+        body = {"name": name, "expression": expression, "target_type": target_type, "target_config": target_config, **options}
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            res = await http.post(self._base, json=body, headers=self._headers())
+            res.raise_for_status()
+            return res.json()
+
+    async def toggle(self, cron_id: str, enabled: bool) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            res = await http.post(f"{self._base}/{cron_id}/toggle", json={"enabled": enabled}, headers=self._headers())
+            res.raise_for_status()
+            return res.json()
+
+    async def run(self, cron_id: str) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=40.0) as http:
+            res = await http.post(f"{self._base}/{cron_id}/run", headers=self._headers())
+            res.raise_for_status()
+            return res.json()
+
+    async def delete(self, cron_id: str) -> bool:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            res = await http.delete(f"{self._base}/{cron_id}", headers=self._headers())
+            res.raise_for_status()
+            return bool(res.json().get("deleted"))
+
+    async def list_runs(self, cron_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            res = await http.get(f"{self._base}/{cron_id}/runs?limit={limit}", headers=self._headers())
+            res.raise_for_status()
+            return res.json().get("runs", [])
+
+    async def update(self, cron_id: str, **updates: Any) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            res = await http.request("PATCH", f"{self._base}/{cron_id}", json=updates, headers=self._headers())
+            res.raise_for_status()
+            return res.json()
+
+
+class JobsClient:
+    """On-demand asynchronous background job queue (`client.jobs`),
+    addressed by database name. Execution happens out-of-band in the
+    server's own jobs scheduler -- these methods only enqueue/inspect/
+    cancel."""
+
+    def __init__(self, client: PGBHubClient):
+        self._client = client
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self._client.api_key:
+            headers["Authorization"] = f"Bearer {self._client.api_key}"
+        return headers
+
+    @property
+    def _base(self) -> str:
+        return f"{self._client.endpoint}/api/v1/databases/{self._client.database}/jobs"
+
+    def enqueue(self, job_type: str, target_type: str, target_config: dict[str, Any], **options: Any) -> dict[str, Any]:
+        """Enqueue a new background job. `options` may include payload,
+        idempotency_key, max_attempts."""
+        body = {"job_type": job_type, "target_type": target_type, "target_config": target_config, **options}
+        if httpx is not None:
+            with httpx.Client(timeout=15.0) as http:
+                res = http.post(self._base, json=body, headers=self._headers())
+                res.raise_for_status()
+                return res.json().get("job", {})
+        req = urllib.request.Request(self._base, data=json.dumps(body).encode("utf-8"), headers=self._headers(), method="POST")
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            return json.loads(resp.read().decode("utf-8")).get("job", {})
+
+    def get(self, job_id: int) -> Optional[dict[str, Any]]:
+        """Fetch a single job by ID, or None if not found."""
+        url = f"{self._base}/{job_id}"
+        if httpx is not None:
+            with httpx.Client(timeout=15.0) as http:
+                res = http.get(url, headers=self._headers())
+                if res.status_code == 404:
+                    return None
+                res.raise_for_status()
+                return res.json().get("job")
+        req = urllib.request.Request(url, headers=self._headers(), method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=15.0) as resp:
+                return json.loads(resp.read().decode("utf-8")).get("job")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            raise
+
+    def list(self, status: Optional[str] = None, limit: int = 100) -> list[dict[str, Any]]:
+        """List jobs, optionally filtered by status."""
+        params = {"limit": limit}
+        if status:
+            params["status"] = status
+        qs = urllib.parse.urlencode(params)
+        url = f"{self._base}?{qs}"
+        if httpx is not None:
+            with httpx.Client(timeout=15.0) as http:
+                res = http.get(url, headers=self._headers())
+                res.raise_for_status()
+                return res.json().get("jobs", [])
+        req = urllib.request.Request(url, headers=self._headers(), method="GET")
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            return json.loads(resp.read().decode("utf-8")).get("jobs", [])
+
+    def cancel(self, job_id: int) -> bool:
+        """Cancel a pending/running job. Returns False if it could not
+        be cancelled (already running or finished) instead of raising."""
+        url = f"{self._base}/{job_id}/cancel"
+        if httpx is not None:
+            with httpx.Client(timeout=15.0) as http:
+                res = http.post(url, headers=self._headers())
+                if res.status_code == 409:
+                    return False
+                res.raise_for_status()
+                return bool(res.json().get("cancelled"))
+        req = urllib.request.Request(url, headers=self._headers(), method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=15.0) as resp:
+                return bool(json.loads(resp.read().decode("utf-8")).get("cancelled"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 409:
+                return False
+            raise
+
+
+class AsyncJobsClient:
+    """Async counterpart of JobsClient."""
+
+    def __init__(self, client: AsyncPGBHubClient):
+        self._client = client
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self._client.api_key:
+            headers["Authorization"] = f"Bearer {self._client.api_key}"
+        return headers
+
+    @property
+    def _base(self) -> str:
+        return f"{self._client.endpoint}/api/v1/databases/{self._client.database}/jobs"
+
+    async def enqueue(self, job_type: str, target_type: str, target_config: dict[str, Any], **options: Any) -> dict[str, Any]:
+        body = {"job_type": job_type, "target_type": target_type, "target_config": target_config, **options}
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            res = await http.post(self._base, json=body, headers=self._headers())
+            res.raise_for_status()
+            return res.json().get("job", {})
+
+    async def get(self, job_id: int) -> Optional[dict[str, Any]]:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            res = await http.get(f"{self._base}/{job_id}", headers=self._headers())
+            if res.status_code == 404:
+                return None
+            res.raise_for_status()
+            return res.json().get("job")
+
+    async def list(self, status: Optional[str] = None, limit: int = 100) -> list[dict[str, Any]]:
+        params = {"limit": limit}
+        if status:
+            params["status"] = status
+        qs = urllib.parse.urlencode(params)
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            res = await http.get(f"{self._base}?{qs}", headers=self._headers())
+            res.raise_for_status()
+            return res.json().get("jobs", [])
+
+    async def cancel(self, job_id: int) -> bool:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            res = await http.post(f"{self._base}/{job_id}/cancel", headers=self._headers())
+            if res.status_code == 409:
+                return False
+            res.raise_for_status()
+            return bool(res.json().get("cancelled"))
+
+
+class QueuesClient:
+    """Durable message queues (`client.queues`). Unlike Cron/Jobs/
+    Functions, queue routes are addressed by project ID, not database
+    name (/api/v1/projects/{id}/queues/...) -- pass project_id to
+    PGBHubClient or set PGBHUB_PROJECT_ID. Queue creation/deletion is
+    dashboard-only today (no API route); this client covers
+    send/receive/ack/nack against an already-created queue."""
+
+    def __init__(self, client: PGBHubClient):
+        self._client = client
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self._client.api_key:
+            headers["Authorization"] = f"Bearer {self._client.api_key}"
+        return headers
+
+    def _url(self, queue_name: str, action: str) -> str:
+        if not self._client.project_id:
+            raise ValueError("QueuesClient requires project_id — pass project_id= to PGBHubClient, or set PGBHUB_PROJECT_ID.")
+        return f"{self._client.endpoint}/api/v1/projects/{self._client.project_id}/queues/{queue_name}/{action}"
+
+    def send(self, queue_name: str, payload: Any, **options: Any) -> dict[str, Any]:
+        """Send a message to a queue. `options` may include
+        delay_seconds, deduplication_id."""
+        body = {"payload": payload, **options}
+        url = self._url(queue_name, "send")
+        if httpx is not None:
+            with httpx.Client(timeout=15.0) as http:
+                res = http.post(url, json=body, headers=self._headers())
+                res.raise_for_status()
+                return res.json().get("message", {})
+        req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=self._headers(), method="POST")
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            return json.loads(resp.read().decode("utf-8")).get("message", {})
+
+    def receive(self, queue_name: str, **options: Any) -> list[dict[str, Any]]:
+        """Receive (and lease) messages from a queue. `options` may
+        include max_messages, visibility_timeout, consumer_id."""
+        url = self._url(queue_name, "receive")
+        if httpx is not None:
+            with httpx.Client(timeout=15.0) as http:
+                res = http.post(url, json=options, headers=self._headers())
+                res.raise_for_status()
+                return res.json().get("messages", [])
+        req = urllib.request.Request(url, data=json.dumps(options).encode("utf-8"), headers=self._headers(), method="POST")
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            return json.loads(resp.read().decode("utf-8")).get("messages", [])
+
+    def ack(self, queue_name: str, message_id: str) -> bool:
+        """Acknowledge (delete) a successfully processed message."""
+        url = self._url(queue_name, "ack")
+        body = {"message_id": message_id}
+        if httpx is not None:
+            with httpx.Client(timeout=15.0) as http:
+                res = http.post(url, json=body, headers=self._headers())
+                res.raise_for_status()
+                return bool(res.json().get("ok"))
+        req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=self._headers(), method="POST")
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            return bool(json.loads(resp.read().decode("utf-8")).get("ok"))
+
+    def nack(self, queue_name: str, message_id: str, error: Optional[str] = None) -> bool:
+        """Negatively acknowledge a message — returns it to the queue
+        (or to the DLQ past max retries)."""
+        url = self._url(queue_name, "nack")
+        body = {"message_id": message_id, "error": error}
+        if httpx is not None:
+            with httpx.Client(timeout=15.0) as http:
+                res = http.post(url, json=body, headers=self._headers())
+                res.raise_for_status()
+                return bool(res.json().get("ok"))
+        req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=self._headers(), method="POST")
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            return bool(json.loads(resp.read().decode("utf-8")).get("ok"))
+
+
+class AsyncQueuesClient:
+    """Async counterpart of QueuesClient."""
+
+    def __init__(self, client: AsyncPGBHubClient):
+        self._client = client
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self._client.api_key:
+            headers["Authorization"] = f"Bearer {self._client.api_key}"
+        return headers
+
+    def _url(self, queue_name: str, action: str) -> str:
+        if not self._client.project_id:
+            raise ValueError("QueuesClient requires project_id — pass project_id= to AsyncPGBHubClient, or set PGBHUB_PROJECT_ID.")
+        return f"{self._client.endpoint}/api/v1/projects/{self._client.project_id}/queues/{queue_name}/{action}"
+
+    async def send(self, queue_name: str, payload: Any, **options: Any) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            res = await http.post(self._url(queue_name, "send"), json={"payload": payload, **options}, headers=self._headers())
+            res.raise_for_status()
+            return res.json().get("message", {})
+
+    async def receive(self, queue_name: str, **options: Any) -> list[dict[str, Any]]:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            res = await http.post(self._url(queue_name, "receive"), json=options, headers=self._headers())
+            res.raise_for_status()
+            return res.json().get("messages", [])
+
+    async def ack(self, queue_name: str, message_id: str) -> bool:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            res = await http.post(self._url(queue_name, "ack"), json={"message_id": message_id}, headers=self._headers())
+            res.raise_for_status()
+            return bool(res.json().get("ok"))
+
+    async def nack(self, queue_name: str, message_id: str, error: Optional[str] = None) -> bool:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            res = await http.post(self._url(queue_name, "nack"), json={"message_id": message_id, "error": error}, headers=self._headers())
+            res.raise_for_status()
+            return bool(res.json().get("ok"))
+
+
+class RealtimeClient:
+    """Realtime broadcast channels (`client.realtime`). Channel names
+    are namespaced server-side by project, so two different projects'
+    channels of the same name never collide. Streaming/subscribe is not
+    exposed synchronously here (use AsyncRealtimeClient.stream for SSE
+    subscription)."""
+
+    def __init__(self, client: PGBHubClient):
+        self._client = client
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self._client.api_key:
+            headers["Authorization"] = f"Bearer {self._client.api_key}"
+        return headers
+
+    def broadcast(self, channel: str, payload: Any, event: str = "message", sender_id: Optional[str] = None) -> dict[str, Any]:
+        """Broadcast a message to a realtime channel."""
+        url = f"{self._client.endpoint}/api/v1/realtime/channels/{channel}/broadcast"
+        body = {"channel": channel, "event": event, "payload": payload, "sender_id": sender_id}
+        if httpx is not None:
+            with httpx.Client(timeout=15.0) as http:
+                res = http.post(url, json=body, headers=self._headers())
+                res.raise_for_status()
+                return res.json()
+        req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=self._headers(), method="POST")
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+
+class AsyncRealtimeClient:
+    """Async counterpart of RealtimeClient, plus SSE stream subscription."""
+
+    def __init__(self, client: AsyncPGBHubClient):
+        self._client = client
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self._client.api_key:
+            headers["Authorization"] = f"Bearer {self._client.api_key}"
+        return headers
+
+    async def broadcast(self, channel: str, payload: Any, event: str = "message", sender_id: Optional[str] = None) -> dict[str, Any]:
+        url = f"{self._client.endpoint}/api/v1/realtime/channels/{channel}/broadcast"
+        body = {"channel": channel, "event": event, "payload": payload, "sender_id": sender_id}
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            res = await http.post(url, json=body, headers=self._headers())
+            res.raise_for_status()
+            return res.json()
+
+    async def stream(self, channel: str):
+        """Subscribe to a realtime channel via Server-Sent Events.
+        Yields {"event": str, "data": Any} dicts as they arrive; stop
+        iterating (e.g. `break`) to disconnect."""
+        url = f"{self._client.endpoint}/api/v1/realtime/stream"
+        headers = {"Accept": "text/event-stream"}
+        if self._client.api_key:
+            headers["Authorization"] = f"Bearer {self._client.api_key}"
+        async with httpx.AsyncClient(timeout=None) as http:
+            async with http.stream("GET", url, params={"channel": channel}, headers=headers) as res:
+                res.raise_for_status()
+                current_event = "message"
+                current_data: list[str] = []
+                async for line in res.aiter_lines():
+                    if line == "":
+                        if current_data:
+                            raw = "\n".join(current_data)
+                            try:
+                                data: Any = json.loads(raw)
+                            except Exception:
+                                data = raw
+                            yield {"event": current_event, "data": data}
+                            current_event = "message"
+                            current_data = []
+                    elif line.startswith("event:"):
+                        current_event = line[len("event:"):].strip()
+                    elif line.startswith("data:"):
+                        current_data.append(line[len("data:"):].strip())
+
+
 class PGBHubClient:
     """PGBHub Client supporting direct dynamic table models and action invocations."""
 
@@ -875,14 +1383,20 @@ class PGBHubClient:
         api_key: Optional[str] = None,
         endpoint: Optional[str] = None,
         database: Optional[str] = None,
+        project_id: Optional[str] = None,
     ):
         self.api_key = api_key or os.environ.get("PGBHUB_API_KEY")
         self.endpoint = (endpoint or os.environ.get("PGBHUB_ENDPOINT", "https://cloud.pgbhub.com")).rstrip("/")
         self.database = database or os.environ.get("PGBHUB_DATABASE", "postgres")
+        self.project_id = project_id or os.environ.get("PGBHUB_PROJECT_ID")
         self.actions = ActionsProxy(self)
         self.functions = FunctionsClient(self)
         self.auth = AuthClient(self)
         self.storage = StorageClient(self)
+        self.cron = CronClient(self)
+        self.jobs = JobsClient(self)
+        self.queues = QueuesClient(self)
+        self.realtime = RealtimeClient(self)
 
     def table(self, name: str) -> TableClient:
         """Access a typed table model accessor."""
@@ -995,14 +1509,20 @@ class AsyncPGBHubClient:
         api_key: Optional[str] = None,
         endpoint: Optional[str] = None,
         database: Optional[str] = None,
+        project_id: Optional[str] = None,
     ):
         self.api_key = api_key or os.environ.get("PGBHUB_API_KEY")
         self.endpoint = (endpoint or os.environ.get("PGBHUB_ENDPOINT", "https://cloud.pgbhub.com")).rstrip("/")
         self.database = database or os.environ.get("PGBHUB_DATABASE", "postgres")
+        self.project_id = project_id or os.environ.get("PGBHUB_PROJECT_ID")
         self.actions = AsyncActionsProxy(self)
         self.functions = AsyncFunctionsClient(self)
         self.auth = AsyncAuthClient(self)
         self.storage = AsyncStorageClient(self)
+        self.cron = AsyncCronClient(self)
+        self.jobs = AsyncJobsClient(self)
+        self.queues = AsyncQueuesClient(self)
+        self.realtime = AsyncRealtimeClient(self)
 
     def table(self, name: str) -> AsyncTableClient:
         """Access an async typed table model accessor."""

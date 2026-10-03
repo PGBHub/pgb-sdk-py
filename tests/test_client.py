@@ -280,5 +280,162 @@ class TestCreateDatabase(unittest.TestCase):
         self.assertEqual(result["database"], "newdb")
 
 
+class TestCronClient(unittest.TestCase):
+    def setUp(self):
+        _FakeSyncHttpClient.calls = []
+        self.patcher = patch.object(pgb_client, "httpx", MagicMock(Client=_FakeSyncHttpClient, AsyncClient=_FakeAsyncHttpClient))
+        self.patcher.start()
+        self.client = pgb_client.PGBHubClient(api_key="pgb_sec_test", endpoint="https://test.pgbhub.dev", database="appdb")
+
+    def tearDown(self):
+        self.patcher.stop()
+
+    def test_create_posts_target_type_and_target_config(self):
+        _FakeSyncHttpClient.responder = staticmethod(lambda m, u, j, h: _FakeResponse(201, {"id": "cron_1", "name": "nightly"}))
+
+        self.client.cron.create("nightly", "0 0 * * *", "function", {"function_name": "cleanup"}, timeout_seconds=60)
+
+        call = _FakeSyncHttpClient.calls[0]
+        self.assertEqual(call["url"], "https://test.pgbhub.dev/api/v1/databases/appdb/crons")
+        self.assertEqual(call["json"]["target_type"], "function")
+        self.assertEqual(call["json"]["target_config"], {"function_name": "cleanup"})
+        self.assertEqual(call["json"]["timeout_seconds"], 60)
+
+    def test_list_reads_crons_field(self):
+        _FakeSyncHttpClient.responder = staticmethod(lambda m, u, j, h: _FakeResponse(200, {"crons": [{"id": "cron_1"}], "total": 1}))
+
+        jobs = self.client.cron.list()
+        self.assertEqual(len(jobs), 1)
+
+    def test_toggle_run_delete_hit_right_subpaths(self):
+        _FakeSyncHttpClient.responder = staticmethod(lambda m, u, j, h: _FakeResponse(200, {}))
+
+        self.client.cron.toggle("cron_1", False)
+        self.assertEqual(_FakeSyncHttpClient.calls[0]["url"], "https://test.pgbhub.dev/api/v1/databases/appdb/crons/cron_1/toggle")
+        self.assertEqual(_FakeSyncHttpClient.calls[0]["json"]["enabled"], False)
+
+        self.client.cron.run("cron_1")
+        self.assertEqual(_FakeSyncHttpClient.calls[1]["url"], "https://test.pgbhub.dev/api/v1/databases/appdb/crons/cron_1/run")
+        self.assertEqual(_FakeSyncHttpClient.calls[1]["method"], "POST")
+
+        self.client.cron.delete("cron_1")
+        self.assertEqual(_FakeSyncHttpClient.calls[2]["url"], "https://test.pgbhub.dev/api/v1/databases/appdb/crons/cron_1")
+        self.assertEqual(_FakeSyncHttpClient.calls[2]["method"], "DELETE")
+
+
+class TestJobsClient(unittest.TestCase):
+    def setUp(self):
+        _FakeSyncHttpClient.calls = []
+        self.patcher = patch.object(pgb_client, "httpx", MagicMock(Client=_FakeSyncHttpClient, AsyncClient=_FakeAsyncHttpClient))
+        self.patcher.start()
+        self.client = pgb_client.PGBHubClient(api_key="pgb_sec_test", endpoint="https://test.pgbhub.dev", database="appdb")
+
+    def tearDown(self):
+        self.patcher.stop()
+
+    def test_enqueue_posts_job_type_and_target_type_and_unwraps_job(self):
+        _FakeSyncHttpClient.responder = staticmethod(
+            lambda m, u, j, h: _FakeResponse(201, {"success": True, "job": {"id": 1, "status": "pending"}})
+        )
+
+        job = self.client.jobs.enqueue("send-report", "sql", {"sql": "select 1"}, max_attempts=3)
+
+        call = _FakeSyncHttpClient.calls[0]
+        self.assertEqual(call["url"], "https://test.pgbhub.dev/api/v1/databases/appdb/jobs")
+        self.assertEqual(call["json"]["job_type"], "send-report")
+        self.assertEqual(call["json"]["max_attempts"], 3)
+        self.assertEqual(job["id"], 1)
+
+    def test_get_returns_none_on_404_instead_of_raising(self):
+        _FakeSyncHttpClient.responder = staticmethod(lambda m, u, j, h: _FakeResponse(404, {"error": "Job not found"}))
+
+        self.assertIsNone(self.client.jobs.get(999))
+
+    def test_list_sends_status_and_limit_as_query_params(self):
+        _FakeSyncHttpClient.responder = staticmethod(lambda m, u, j, h: _FakeResponse(200, {"success": True, "jobs": [], "total": 0}))
+
+        self.client.jobs.list(status="failed", limit=5)
+        url = _FakeSyncHttpClient.calls[0]["url"]
+        self.assertIn("status=failed", url)
+        self.assertIn("limit=5", url)
+
+    def test_cancel_returns_false_on_409_instead_of_raising(self):
+        _FakeSyncHttpClient.responder = staticmethod(lambda m, u, j, h: _FakeResponse(409, {"error": "cannot cancel"}))
+
+        self.assertFalse(self.client.jobs.cancel(1))
+
+
+class TestQueuesClient(unittest.TestCase):
+    def setUp(self):
+        _FakeSyncHttpClient.calls = []
+        self.patcher = patch.object(pgb_client, "httpx", MagicMock(Client=_FakeSyncHttpClient, AsyncClient=_FakeAsyncHttpClient))
+        self.patcher.start()
+
+    def tearDown(self):
+        self.patcher.stop()
+
+    def test_without_project_id_raises_a_clear_error(self):
+        client = pgb_client.PGBHubClient(api_key="pgb_sec_test", endpoint="https://test.pgbhub.dev")
+        with self.assertRaisesRegex(ValueError, "requires project_id"):
+            client.queues.send("my-queue", {"hello": "world"})
+
+    def test_send_hits_project_scoped_url_and_unwraps_message(self):
+        client = pgb_client.PGBHubClient(api_key="pgb_sec_test", endpoint="https://test.pgbhub.dev", project_id="prj_1")
+        _FakeSyncHttpClient.responder = staticmethod(
+            lambda m, u, j, h: _FakeResponse(200, {"ok": True, "message": {"message_id": "msg_1", "deduplicated": False}})
+        )
+
+        msg = client.queues.send("my-queue", {"hello": "world"}, delay_seconds=5)
+
+        call = _FakeSyncHttpClient.calls[0]
+        self.assertEqual(call["url"], "https://test.pgbhub.dev/api/v1/projects/prj_1/queues/my-queue/send")
+        self.assertEqual(call["json"]["payload"], {"hello": "world"})
+        self.assertEqual(call["json"]["delay_seconds"], 5)
+        self.assertEqual(msg["message_id"], "msg_1")
+
+    def test_receive_ack_nack_hit_right_subpaths(self):
+        client = pgb_client.PGBHubClient(api_key="pgb_sec_test", endpoint="https://test.pgbhub.dev", project_id="prj_1")
+
+        _FakeSyncHttpClient.responder = staticmethod(
+            lambda m, u, j, h: _FakeResponse(200, {"ok": True, "count": 1, "messages": [{"message_id": "msg_1"}]})
+        )
+        msgs = client.queues.receive("my-queue", max_messages=1)
+        self.assertEqual(_FakeSyncHttpClient.calls[0]["url"], "https://test.pgbhub.dev/api/v1/projects/prj_1/queues/my-queue/receive")
+        self.assertEqual(len(msgs), 1)
+
+        _FakeSyncHttpClient.responder = staticmethod(lambda m, u, j, h: _FakeResponse(200, {"ok": True}))
+        client.queues.ack("my-queue", "msg_1")
+        self.assertEqual(_FakeSyncHttpClient.calls[1]["url"], "https://test.pgbhub.dev/api/v1/projects/prj_1/queues/my-queue/ack")
+        self.assertEqual(_FakeSyncHttpClient.calls[1]["json"]["message_id"], "msg_1")
+
+        client.queues.nack("my-queue", "msg_1", error="boom")
+        self.assertEqual(_FakeSyncHttpClient.calls[2]["url"], "https://test.pgbhub.dev/api/v1/projects/prj_1/queues/my-queue/nack")
+        self.assertEqual(_FakeSyncHttpClient.calls[2]["json"]["error"], "boom")
+
+
+class TestRealtimeClient(unittest.TestCase):
+    def setUp(self):
+        _FakeSyncHttpClient.calls = []
+        self.patcher = patch.object(pgb_client, "httpx", MagicMock(Client=_FakeSyncHttpClient, AsyncClient=_FakeAsyncHttpClient))
+        self.patcher.start()
+        self.client = pgb_client.PGBHubClient(api_key="pgb_sec_test", endpoint="https://test.pgbhub.dev")
+
+    def tearDown(self):
+        self.patcher.stop()
+
+    def test_broadcast_posts_to_channel_endpoint(self):
+        _FakeSyncHttpClient.responder = staticmethod(
+            lambda m, u, j, h: _FakeResponse(200, {"ok": True, "broadcast": {"delivered_to": 2}})
+        )
+
+        result = self.client.realtime.broadcast("general", {"text": "hi"}, event="chat")
+
+        call = _FakeSyncHttpClient.calls[0]
+        self.assertEqual(call["url"], "https://test.pgbhub.dev/api/v1/realtime/channels/general/broadcast")
+        self.assertEqual(call["json"]["event"], "chat")
+        self.assertEqual(call["json"]["payload"], {"text": "hi"})
+        self.assertEqual(result["broadcast"]["delivered_to"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
