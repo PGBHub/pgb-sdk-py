@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import time
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -41,8 +43,36 @@ class ActionResponse(BaseModel):
     duration_ms: float = 0.0
     results: Any = None
     outbox_id: Optional[int] = None
+    effects_queued: int = 0
+    effects_preview: Optional[list] = None
     message: Optional[str] = None
 
+
+
+def _with_query(client: Any, path: str, query: dict[str, Any]) -> str:
+    """Path plus query string; `dbname` is added only when a database was configured."""
+    params = {k: v for k, v in query.items() if v is not None and v != ""}
+    if getattr(client, "database_explicit", False):
+        params = {"dbname": client.database, **params}
+    return f"{path}?{urllib.parse.urlencode(params)}" if params else path
+
+
+def _action_body(options: dict[str, Any]) -> dict[str, Any]:
+    """Map register(name=, sql=, effects=, ...) onto the API's field names."""
+    if not options.get("name") or not options.get("sql"):
+        raise ValueError("register() needs name= and sql= (use %(param)s placeholders in the SQL).")
+    body = {
+        "name": options["name"],
+        "sql_template": options["sql"],
+        "title": options.get("title"),
+        "description": options.get("description") or "",
+        "input_schema": options.get("input_schema"),
+        "output_schema": options.get("output_schema"),
+        "sample_params": options.get("sample_params"),
+        "effects": options.get("effects"),
+        "webhook_url": options.get("webhook_url"),
+    }
+    return {k: v for k, v in body.items() if v is not None}
 
 
 class ActionsProxy:
@@ -50,9 +80,41 @@ class ActionsProxy:
         self._client = client
 
     def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+
         def invoker(params: Optional[dict[str, Any]] = None, dry_run: bool = False) -> ActionResponse:
             return self._client.invoke_action(name, params or {}, dry_run=dry_run)
         return invoker
+
+    def run(self, name: str, params: Optional[dict[str, Any]] = None, dry_run: bool = False) -> ActionResponse:
+        """Same as `client.actions.<name>(params)`, for names held in a variable."""
+        return self._client.invoke_action(name, params or {}, dry_run=dry_run)
+
+    def list(self) -> list[dict[str, Any]]:
+        """Every registered action."""
+        return _auth_request(self._client, "GET", self._client_path("/v1/actions")).get("actions", [])
+
+    def get(self, name: str) -> dict[str, Any]:
+        return _auth_request(self._client, "GET", self._client_path(f"/v1/actions/{urllib.parse.quote(name, safe='')}"))
+
+    def register(self, **options: Any) -> dict[str, Any]:
+        """Create or replace an action. See _action_body for the accepted options."""
+        return _auth_request(self._client, "POST", self._client_path("/v1/actions/register"), _action_body(options))
+
+    def delete(self, name: str) -> None:
+        _auth_request(self._client, "DELETE", self._client_path(f"/v1/actions/{urllib.parse.quote(name, safe='')}"))
+
+    def deliveries(self, action: Optional[str] = None, status: Optional[str] = None, limit: Optional[int] = None) -> list[dict[str, Any]]:
+        """What the actions' effects did: delivered, waiting, or failed (with the reason)."""
+        return _auth_request(self._client, "GET", self._client_path("/v1/actions/deliveries", action=action, status=status, limit=limit)).get("deliveries", [])
+
+    def retry_delivery(self, delivery_id: int) -> None:
+        """Put a failed delivery back in the queue."""
+        _auth_request(self._client, "POST", self._client_path(f"/v1/actions/deliveries/{int(delivery_id)}/retry"), {})
+
+    def _client_path(self, path: str, **query: Any) -> str:
+        return _with_query(self._client, path, query)
 
 
 class AsyncActionsProxy:
@@ -60,9 +122,34 @@ class AsyncActionsProxy:
         self._client = client
 
     def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+
         async def invoker(params: Optional[dict[str, Any]] = None, dry_run: bool = False) -> ActionResponse:
             return await self._client.invoke_action(name, params or {}, dry_run=dry_run)
         return invoker
+
+    async def run(self, name: str, params: Optional[dict[str, Any]] = None, dry_run: bool = False) -> ActionResponse:
+        return await self._client.invoke_action(name, params or {}, dry_run=dry_run)
+
+    async def list(self) -> list[dict[str, Any]]:
+        return (await _auth_request_async(self._client, "GET", _with_query(self._client, "/v1/actions", {}))).get("actions", [])
+
+    async def get(self, name: str) -> dict[str, Any]:
+        return await _auth_request_async(self._client, "GET", _with_query(self._client, f"/v1/actions/{urllib.parse.quote(name, safe='')}", {}))
+
+    async def register(self, **options: Any) -> dict[str, Any]:
+        return await _auth_request_async(self._client, "POST", _with_query(self._client, "/v1/actions/register", {}), _action_body(options))
+
+    async def delete(self, name: str) -> None:
+        await _auth_request_async(self._client, "DELETE", _with_query(self._client, f"/v1/actions/{urllib.parse.quote(name, safe='')}", {}))
+
+    async def deliveries(self, action: Optional[str] = None, status: Optional[str] = None, limit: Optional[int] = None) -> list[dict[str, Any]]:
+        path = _with_query(self._client, "/v1/actions/deliveries", {"action": action, "status": status, "limit": limit})
+        return (await _auth_request_async(self._client, "GET", path)).get("deliveries", [])
+
+    async def retry_delivery(self, delivery_id: int) -> None:
+        await _auth_request_async(self._client, "POST", _with_query(self._client, f"/v1/actions/deliveries/{int(delivery_id)}/retry", {}), {})
 
 
 class DocumentCollection:
@@ -235,15 +322,66 @@ class AsyncTableClient:
         return res.get("count", 0)
 
 
-class PGBHubAuthError(Exception):
-    """Raised by AuthClient/AsyncAuthClient/StorageClient.get_file on a
-    non-2xx response, carrying the server's own parsed error message
-    instead of a generic httpx.HTTPStatusError with no useful detail."""
+class PGBHubError(Exception):
+    """Raised on a non-2xx response or a network failure, carrying the
+    server's own message plus `status_code`, `code`, `body` and (for 429)
+    `retry_after` seconds. `PGBHubAuthError` is kept as an alias."""
 
-    def __init__(self, status_code: int, message: str):
+    def __init__(
+        self,
+        status_code: int,
+        message: str,
+        code: Optional[str] = None,
+        body: Any = None,
+        retry_after: Optional[float] = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
         self.message = message
+        self.code = code
+        self.body = body
+        self.retry_after = retry_after
+
+
+PGBHubAuthError = PGBHubError
+
+_RETRY_STATUSES = (502, 503, 504)
+
+
+def _error_message(data: Any, fallback: str) -> str:
+    if isinstance(data, dict):
+        for key in ("error", "detail", "message"):
+            value = data.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return fallback
+
+
+def _raise_for_response(status: int, data: Any, text: str, headers: Any) -> None:
+    retry_after = None
+    try:
+        raw = (headers or {}).get("retry-after")
+        if raw is not None and float(raw) > 0:
+            retry_after = float(raw)
+    except Exception:
+        retry_after = None
+    code = data.get("code") if isinstance(data, dict) and isinstance(data.get("code"), str) else None
+    raise PGBHubError(status, _error_message(data, text or f"HTTP {status}"), code=code, body=data, retry_after=retry_after)
+
+
+def _client_timeout(client: Any, default: float) -> float:
+    return float(getattr(client, "timeout", None) or default)
+
+
+def _build_headers(client: Any, extra_headers: Optional[dict[str, str]], has_body: bool = True) -> dict[str, str]:
+    headers = {"Accept": "application/json"}
+    if has_body:
+        headers["Content-Type"] = "application/json"
+    if client.api_key:
+        headers["Authorization"] = f"Bearer {client.api_key}"
+    if extra_headers:
+        headers.update(extra_headers)
+    return headers
 
 
 def _auth_request(
@@ -252,43 +390,62 @@ def _auth_request(
     path: str,
     json_body: Optional[dict[str, Any]] = None,
     extra_headers: Optional[dict[str, str]] = None,
-    timeout: float = 15.0,
+    timeout: Optional[float] = None,
 ) -> dict[str, Any]:
-    """Shared HTTP helper for AuthClient/AuthAdminClient — see PGBHubAuthError."""
-    url = f"{client.endpoint}{path}"
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
-    if client.api_key:
-        headers["Authorization"] = f"Bearer {client.api_key}"
-    if extra_headers:
-        headers.update(extra_headers)
+    """Shared HTTP helper: server errors become PGBHubError, GETs retry
+    transient failures (502/503/504, connection errors) with backoff."""
+    url = path if path.startswith("http") else f"{client.endpoint}{path}"
+    headers = _build_headers(client, extra_headers)
+    timeout = timeout if timeout is not None else _client_timeout(client, 30.0)
+    attempts = 1 + (int(getattr(client, "max_retries", 2)) if method.upper() == "GET" else 0)
+    delay = float(getattr(client, "retry_delay", 0.3))
 
-    if httpx is not None:
-        with httpx.Client(timeout=timeout) as http:
-            res = http.request(method, url, json=json_body, headers=headers)
-            try:
-                data = res.json()
-            except Exception:
-                data = {}
-            if res.status_code >= 400:
-                raise PGBHubAuthError(res.status_code, data.get("error") or res.text)
-            return data
-    else:
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(json_body).encode("utf-8") if json_body is not None else None,
-            headers=headers,
-            method=method,
-        )
+    for attempt in range(attempts):
+        last = attempt == attempts - 1
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", "replace")
-            try:
-                data = json.loads(body)
-            except Exception:
-                data = {}
-            raise PGBHubAuthError(exc.code, data.get("error") or body) from exc
+            if httpx is not None:
+                with httpx.Client(timeout=timeout) as http:
+                    res = http.request(method, url, json=json_body, headers=headers)
+                status, text, res_headers = res.status_code, res.text, getattr(res, "headers", {})
+                try:
+                    data = res.json()
+                except Exception:
+                    data = {}
+            else:
+                req = urllib.request.Request(
+                    url,
+                    data=json.dumps(json_body).encode("utf-8") if json_body is not None else None,
+                    headers=headers,
+                    method=method,
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=timeout) as resp:
+                        status, text, res_headers = resp.status, resp.read().decode("utf-8"), resp.headers
+                except urllib.error.HTTPError as exc:
+                    status, text, res_headers = exc.code, exc.read().decode("utf-8", "replace"), exc.headers
+                try:
+                    data = json.loads(text)
+                except Exception:
+                    data = {}
+        except PGBHubError:
+            raise
+        except Exception as exc:
+            if not last:
+                time.sleep(delay * (2 ** attempt))
+                continue
+            timed_out = "timeout" in type(exc).__name__.lower()
+            raise PGBHubError(
+                0,
+                f"PGBHub request timed out after {timeout}s: {method} {url}" if timed_out else f"PGBHub request failed (network error): {method} {url}: {exc}",
+                code="timeout" if timed_out else "network_error",
+            ) from exc
+        if status in _RETRY_STATUSES and not last:
+            time.sleep(delay * (2 ** attempt))
+            continue
+        if status >= 400:
+            _raise_for_response(status, data, text, res_headers)
+        return data
+    raise PGBHubError(0, f"PGBHub request failed: {method} {url}", code="network_error")
 
 
 async def _auth_request_async(
@@ -297,23 +454,55 @@ async def _auth_request_async(
     path: str,
     json_body: Optional[dict[str, Any]] = None,
     extra_headers: Optional[dict[str, str]] = None,
-    timeout: float = 15.0,
+    timeout: Optional[float] = None,
 ) -> dict[str, Any]:
-    url = f"{client.endpoint}{path}"
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
-    if client.api_key:
-        headers["Authorization"] = f"Bearer {client.api_key}"
-    if extra_headers:
-        headers.update(extra_headers)
-    async with httpx.AsyncClient(timeout=timeout) as http:
-        res = await http.request(method, url, json=json_body, headers=headers)
+    url = path if path.startswith("http") else f"{client.endpoint}{path}"
+    headers = _build_headers(client, extra_headers)
+    timeout = timeout if timeout is not None else _client_timeout(client, 30.0)
+    attempts = 1 + (int(getattr(client, "max_retries", 2)) if method.upper() == "GET" else 0)
+    delay = float(getattr(client, "retry_delay", 0.3))
+
+    for attempt in range(attempts):
+        last = attempt == attempts - 1
         try:
-            data = res.json()
-        except Exception:
-            data = {}
+            async with httpx.AsyncClient(timeout=timeout) as http:
+                res = await http.request(method, url, json=json_body, headers=headers)
+            try:
+                data = res.json()
+            except Exception:
+                data = {}
+        except PGBHubError:
+            raise
+        except Exception as exc:
+            if not last:
+                await asyncio.sleep(delay * (2 ** attempt))
+                continue
+            timed_out = "timeout" in type(exc).__name__.lower()
+            raise PGBHubError(
+                0,
+                f"PGBHub request timed out after {timeout}s: {method} {url}" if timed_out else f"PGBHub request failed (network error): {method} {url}: {exc}",
+                code="timeout" if timed_out else "network_error",
+            ) from exc
+        if res.status_code in _RETRY_STATUSES and not last:
+            await asyncio.sleep(delay * (2 ** attempt))
+            continue
         if res.status_code >= 400:
-            raise PGBHubAuthError(res.status_code, data.get("error") or res.text)
+            _raise_for_response(res.status_code, data, res.text, getattr(res, "headers", {}))
         return data
+    raise PGBHubError(0, f"PGBHub request failed: {method} {url}", code="network_error")
+
+
+def _resolve_endpoint(endpoint: Optional[str], project_id: Optional[str]) -> str:
+    """Explicit endpoint, then PGBHUB_ENDPOINT / PGBHUB_PROJECT_URL, then the
+    project's own address https://<project_id>.pgbhub.app, then the shared cloud."""
+    domain = os.environ.get("PGBHUB_PROJECT_DOMAIN") or "pgbhub.app"
+    chosen = (
+        endpoint
+        or os.environ.get("PGBHUB_ENDPOINT")
+        or os.environ.get("PGBHUB_PROJECT_URL")
+        or (f"https://{project_id}.{domain}" if project_id else "https://cloud.pgbhub.com")
+    )
+    return chosen.rstrip("/")
 
 
 class AuthAdminClient:
@@ -430,128 +619,207 @@ class AsyncAuthAdminClient:
         return bool(data.get("success"))
 
 
-class AuthClient:
-    """Built-In PGB Auth-as-a-Service client (`client.auth`).
+def _with_redirect(body: dict[str, Any], redirect_to: Optional[str]) -> dict[str, Any]:
+    if redirect_to:
+        body["redirect_to"] = redirect_to
+    return body
 
-    Two different bearer tokens are in play: the client's own `api_key`
-    (a project Secret/Publishable key) identifies the *project*, sent as
-    `Authorization: Bearer <key>` on every call; the *end user's* own
-    access token (held in the session set via sign_up/sign_in/set_session)
-    is sent separately as `X-PGB-User-Token` on the routes that need to
-    know who's calling (get_user, sign_out).
+
+class _AuthBase:
+    """Every end-user auth call, shared by the sync and async clients.
+
+    Methods build the request and hand it to `_exec`, which the sync client
+    runs directly and the async client returns as an awaitable. The client's
+    own key identifies the *project*; the signed-in user's access token is
+    sent separately as `X-PGB-User-Token` on calls that act as that user.
     """
 
-    def __init__(self, client: PGBHubClient):
+    def __init__(self, client: Any):
         self._client = client
         self._session: Optional[dict[str, Any]] = None
-        self.admin = AuthAdminClient(client)
 
-    def sign_up(
-        self,
-        email: str,
-        password: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
-    ) -> dict[str, Any]:
-        """Sign up a new user with email & password."""
-        data = _auth_request(
-            self._client, "POST", "/auth/signup",
-            {"email": email, "password": password, "metadata": metadata or {}},
-        )
-        self._session = data.get("session")
-        return data
+    def _exec(self, method, path, body=None, headers=None, after=None):  # pragma: no cover - overridden
+        raise NotImplementedError
 
-    def sign_in(self, email: str, password: Optional[str] = None) -> dict[str, Any]:
-        """Sign in with email & password."""
-        data = _auth_request(self._client, "POST", "/auth/login", {"email": email, "password": password})
+    def _as_user(self) -> dict[str, str]:
+        token = (self._session or {}).get("access_token")
+        if not token:
+            raise PGBHubError(401, "PGBHub Auth: no signed-in user (sign in first, or call set_session()).", code="not_signed_in")
+        return {"X-PGB-User-Token": token}
+
+    def _keep_session(self, data: dict[str, Any]) -> dict[str, Any]:
         if data.get("session"):
             self._session = data["session"]
         return data
 
+    def get_session(self) -> Optional[dict[str, Any]]:
+        """The active session, or None."""
+        return self._session
+
+    def set_session(self, session: Optional[dict[str, Any]]) -> None:
+        """Adopt a session (for example one restored from storage)."""
+        self._session = session
+
+    def get_settings(self):
+        """The project's sign-in rules (methods on, password policy, social providers). No sign-in needed."""
+        return self._exec("GET", "/auth/settings")
+
+    def sign_up(self, email: str, password: Optional[str] = None, metadata: Optional[dict[str, Any]] = None, redirect_to: Optional[str] = None):
+        """Sign up with email & password. When the project requires email
+        verification the result has `verification_required` and no session."""
+        body = _with_redirect({"email": email, "password": password, "metadata": metadata or {}}, redirect_to)
+        return self._exec("POST", "/auth/signup", body, after=self._keep_session)
+
+    def sign_in(self, email: str, password: Optional[str] = None):
+        """Sign in with email & password. With two-factor on, the result has
+        `mfa_required` and no session: finish with verify_mfa()."""
+        return self._exec("POST", "/auth/login", {"email": email, "password": password}, after=self._keep_session)
+
+    def refresh_session(self, refresh_token: Optional[str] = None):
+        """Exchange a refresh token for a new session, rotating the refresh token."""
+        token = refresh_token or (self._session or {}).get("refresh_token")
+        if not token:
+            raise ValueError("refresh_session() requires a refresh token (none provided and no active session).")
+        return self._exec("POST", "/auth/refresh", {"refresh_token": token}, after=self._keep_session)
+
+    def request_otp(self, email: str):
+        """Email a one-time passcode for passwordless sign-in."""
+        return self._exec("POST", "/auth/otp", {"email": email})
+
+    def verify_otp(self, email: str, token: str):
+        """Verify a one-time passcode and establish a session."""
+        return self._exec("POST", "/auth/otp/verify", {"email": email, "token": token}, after=self._keep_session)
+
+    def send_magic_link(self, email: str, redirect_to: Optional[str] = None):
+        """Email a passwordless magic link. `redirect_to` must be allowed in the project's settings."""
+        return self._exec("POST", "/auth/magic", _with_redirect({"email": email}, redirect_to))
+
+    def verify_magic_link(self, token: str):
+        """Verify a magic link token and establish a session."""
+        return self._exec("POST", "/auth/magic/verify", {"token": token}, after=self._keep_session)
+
+    def resend_verification(self, email: str, redirect_to: Optional[str] = None):
+        """Send the email-verification message again."""
+        return self._exec("POST", "/auth/resend-verification", _with_redirect({"email": email}, redirect_to))
+
+    def forgot_password(self, email: str, redirect_to: Optional[str] = None):
+        """Email a password-reset link. Always succeeds, so it never reveals which emails have accounts."""
+        return self._exec("POST", "/auth/forgot-password", _with_redirect({"email": email}, redirect_to))
+
+    def reset_password(self, token: str, password: str):
+        """Set a new password using the token from the reset email."""
+        return self._exec("POST", "/auth/reset-password", {"token": token, "password": password})
+
+    def change_password(self, new_password: str, current_password: Optional[str] = None):
+        """Change the signed-in user's password. Other sessions are signed out; this one stays."""
+        return self._exec(
+            "POST", "/auth/user/password",
+            {"current_password": current_password or "", "new_password": new_password},
+            headers=self._as_user(),
+        )
+
+    def update_user(self, metadata: dict[str, Any]):
+        """Merge values into the user's profile (`user_metadata`). A key set to None is removed."""
+        return self._exec("POST", "/auth/user/update", {"user_metadata": metadata}, headers=self._as_user())
+
+    def delete_account(self, password: Optional[str] = None):
+        """Permanently delete the signed-in user's own account."""
+        return self._exec("POST", "/auth/user/delete", {"password": password or ""}, headers=self._as_user(), after=self._forget_session)
+
+    def _forget_session(self, data: dict[str, Any]) -> dict[str, Any]:
+        self._session = None
+        return data
+
+    def get_events(self):
+        """The user's recent sign-ins and security events."""
+        return self._exec("GET", "/auth/user/events", headers=self._as_user(), after=lambda d: d.get("events") or [])
+
+    def list_sessions(self):
+        """The user's active sessions (devices). `is_current` marks this one."""
+        return self._exec("GET", "/auth/sessions", headers=self._as_user(), after=lambda d: d.get("sessions") or [])
+
+    def revoke_session(self, session_id: str):
+        """Sign out one session (for example an old phone)."""
+        return self._exec("DELETE", f"/auth/sessions/{urllib.parse.quote(session_id, safe='')}", headers=self._as_user())
+
+    def revoke_other_sessions(self):
+        """Sign out every session except this one. Returns how many were ended."""
+        return self._exec("POST", "/auth/sessions/revoke-all", {}, headers=self._as_user(), after=lambda d: d.get("revoked", 0))
+
+    def enroll_mfa(self):
+        """Start two-factor enrolment: show `provisioning_uri` as a QR code, then confirm_mfa()."""
+        return self._exec("POST", "/auth/mfa/enroll", {}, headers=self._as_user())
+
+    def confirm_mfa(self, code: str):
+        """Confirm enrolment with a current code. Returns one-time backup codes: show them once."""
+        return self._exec("POST", "/auth/mfa/confirm", {"code": code}, headers=self._as_user())
+
+    def disable_mfa(self, code: str):
+        """Turn two-factor off (needs a current code)."""
+        return self._exec("POST", "/auth/mfa/disable", {"code": code}, headers=self._as_user())
+
+    def verify_mfa(self, challenge_token: str, code: str):
+        """Finish a sign-in that returned `mfa_required`."""
+        return self._exec("POST", "/auth/mfa/verify", {"challenge_token": challenge_token, "code": code}, after=self._keep_session)
+
+    def oauth_start(self, provider: str, redirect_uri: str):
+        """Get the provider's authorize URL (`authorize_url`) and the `state` to check on return."""
+        q = urllib.parse.urlencode({"redirect_uri": redirect_uri})
+        return self._exec("GET", f"/auth/oauth/{urllib.parse.quote(provider, safe='')}/start?{q}")
+
+    def oauth_callback(self, provider: str, code: str, state: str, redirect_uri: str):
+        """Finish a social sign-in with the `code` and `state` the provider sent back."""
+        return self._exec(
+            "POST", f"/auth/oauth/{urllib.parse.quote(provider, safe='')}/callback",
+            {"code": code, "state": state, "redirect_uri": redirect_uri},
+            after=self._keep_session,
+        )
+
+
+class AuthClient(_AuthBase):
+    """Built-in PGB Auth client (`client.auth`)."""
+
+    def __init__(self, client: PGBHubClient):
+        super().__init__(client)
+        self.admin = AuthAdminClient(client)
+
+    def _exec(self, method, path, body=None, headers=None, after=None):
+        data = _auth_request(self._client, method, path, body, extra_headers=headers)
+        return after(data) if after else data
+
     def sign_out(self) -> None:
-        """Sign out and invalidate the current session."""
+        """Sign out and invalidate the current session (best effort on the server)."""
         token = (self._session or {}).get("access_token")
         if token:
             try:
                 _auth_request(self._client, "POST", "/auth/logout", {}, extra_headers={"X-PGB-User-Token": token})
             except Exception:
-                pass  # best effort — a failed server-side revoke must not block clearing local state
+                pass  # a failed server-side revoke must not block clearing local state
         self._session = None
 
     def get_user(self) -> Optional[dict[str, Any]]:
-        """Get the current authenticated user's details."""
+        """The current user, or None when signed out or the session has expired."""
         token = (self._session or {}).get("access_token")
         if not token:
             return None
         try:
-            data = _auth_request(self._client, "GET", "/auth/user", extra_headers={"X-PGB-User-Token": token})
-            return data.get("user")
-        except PGBHubAuthError:
-            return None
-
-    def get_session(self) -> Optional[dict[str, Any]]:
-        """Get the current active session."""
-        return self._session
-
-    def set_session(self, session: Optional[dict[str, Any]]) -> None:
-        """Set the active session."""
-        self._session = session
-
-    def refresh_session(self, refresh_token: Optional[str] = None) -> dict[str, Any]:
-        """Exchange a refresh token for a new session, rotating the refresh token."""
-        token = refresh_token or (self._session or {}).get("refresh_token")
-        if not token:
-            raise ValueError("refresh_session() requires a refresh token (none provided and no active session).")
-        data = _auth_request(self._client, "POST", "/auth/refresh", {"refresh_token": token})
-        self._session = data.get("session")
-        return data
-
-    def request_otp(self, email: str) -> dict[str, Any]:
-        """Request a one-time passcode for passwordless sign-in."""
-        return _auth_request(self._client, "POST", "/auth/otp", {"email": email})
-
-    def verify_otp(self, email: str, token: str) -> dict[str, Any]:
-        """Verify a one-time passcode and establish a session."""
-        data = _auth_request(self._client, "POST", "/auth/otp/verify", {"email": email, "token": token})
-        self._session = data.get("session")
-        return data
-
-    def send_magic_link(self, email: str) -> dict[str, Any]:
-        """Send a passwordless magic link."""
-        return _auth_request(self._client, "POST", "/auth/magic", {"email": email})
-
-    def verify_magic_link(self, token: str) -> dict[str, Any]:
-        """Verify a magic link token and establish a session."""
-        data = _auth_request(self._client, "POST", "/auth/magic/verify", {"token": token})
-        self._session = data.get("session")
-        return data
+            return _auth_request(self._client, "GET", "/auth/user", extra_headers={"X-PGB-User-Token": token}).get("user")
+        except PGBHubError as exc:
+            if exc.status_code in (401, 403):
+                return None
+            raise
 
 
-class AsyncAuthClient:
-    """Async counterpart of AuthClient."""
+class AsyncAuthClient(_AuthBase):
+    """Async counterpart of AuthClient: every call is awaitable."""
 
     def __init__(self, client: AsyncPGBHubClient):
-        self._client = client
-        self._session: Optional[dict[str, Any]] = None
+        super().__init__(client)
         self.admin = AsyncAuthAdminClient(client)
 
-    async def sign_up(
-        self,
-        email: str,
-        password: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
-    ) -> dict[str, Any]:
-        data = await _auth_request_async(
-            self._client, "POST", "/auth/signup",
-            {"email": email, "password": password, "metadata": metadata or {}},
-        )
-        self._session = data.get("session")
-        return data
-
-    async def sign_in(self, email: str, password: Optional[str] = None) -> dict[str, Any]:
-        data = await _auth_request_async(self._client, "POST", "/auth/login", {"email": email, "password": password})
-        if data.get("session"):
-            self._session = data["session"]
-        return data
+    async def _exec(self, method, path, body=None, headers=None, after=None):
+        data = await _auth_request_async(self._client, method, path, body, extra_headers=headers)
+        return after(data) if after else data
 
     async def sign_out(self) -> None:
         token = (self._session or {}).get("access_token")
@@ -567,40 +835,11 @@ class AsyncAuthClient:
         if not token:
             return None
         try:
-            data = await _auth_request_async(self._client, "GET", "/auth/user", extra_headers={"X-PGB-User-Token": token})
-            return data.get("user")
-        except PGBHubAuthError:
-            return None
-
-    def get_session(self) -> Optional[dict[str, Any]]:
-        return self._session
-
-    def set_session(self, session: Optional[dict[str, Any]]) -> None:
-        self._session = session
-
-    async def refresh_session(self, refresh_token: Optional[str] = None) -> dict[str, Any]:
-        token = refresh_token or (self._session or {}).get("refresh_token")
-        if not token:
-            raise ValueError("refresh_session() requires a refresh token (none provided and no active session).")
-        data = await _auth_request_async(self._client, "POST", "/auth/refresh", {"refresh_token": token})
-        self._session = data.get("session")
-        return data
-
-    async def request_otp(self, email: str) -> dict[str, Any]:
-        return await _auth_request_async(self._client, "POST", "/auth/otp", {"email": email})
-
-    async def verify_otp(self, email: str, token: str) -> dict[str, Any]:
-        data = await _auth_request_async(self._client, "POST", "/auth/otp/verify", {"email": email, "token": token})
-        self._session = data.get("session")
-        return data
-
-    async def send_magic_link(self, email: str) -> dict[str, Any]:
-        return await _auth_request_async(self._client, "POST", "/auth/magic", {"email": email})
-
-    async def verify_magic_link(self, token: str) -> dict[str, Any]:
-        data = await _auth_request_async(self._client, "POST", "/auth/magic/verify", {"token": token})
-        self._session = data.get("session")
-        return data
+            return (await _auth_request_async(self._client, "GET", "/auth/user", extra_headers={"X-PGB-User-Token": token})).get("user")
+        except PGBHubError as exc:
+            if exc.status_code in (401, 403):
+                return None
+            raise
 
 
 class StorageClient:
@@ -1384,11 +1623,19 @@ class PGBHubClient:
         endpoint: Optional[str] = None,
         database: Optional[str] = None,
         project_id: Optional[str] = None,
+        timeout: float = 30.0,
+        max_retries: int = 2,
+        retry_delay: float = 0.3,
     ):
-        self.api_key = api_key or os.environ.get("PGBHUB_API_KEY")
-        self.endpoint = (endpoint or os.environ.get("PGBHUB_ENDPOINT", "https://cloud.pgbhub.com")).rstrip("/")
-        self.database = database or os.environ.get("PGBHUB_DATABASE", "postgres")
+        self.api_key = api_key or os.environ.get("PGBHUB_API_KEY") or os.environ.get("PGBHUB_PUBLISHABLE_KEY")
         self.project_id = project_id or os.environ.get("PGBHUB_PROJECT_ID")
+        self.endpoint = _resolve_endpoint(endpoint, self.project_id)
+        explicit_db = database or os.environ.get("PGBHUB_DATABASE")
+        self.database = explicit_db or "postgres"
+        self.database_explicit = bool(explicit_db)
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
         self.actions = ActionsProxy(self)
         self.functions = FunctionsClient(self)
         self.auth = AuthClient(self)
@@ -1442,27 +1689,10 @@ class PGBHubClient:
                 return json.loads(resp.read().decode("utf-8"))
 
     def request(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Make an authenticated request to PGBHub."""
-        url = f"{self.endpoint}{path if path.startswith('/') else '/' + path}"
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        data = {**payload, "dbname": self.database}
-
-        if httpx is not None:
-            with httpx.Client(timeout=15.0) as http:
-                res = http.post(url, json=data, headers=headers)
-                res.raise_for_status()
-                return res.json()
-        else:
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(data).encode("utf-8"),
-                headers=headers,
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=15.0) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+        """Make an authenticated POST to PGBHub. A database is only named when
+        one was configured; otherwise the server uses the one the key belongs to."""
+        data = {**payload, "dbname": self.database} if self.database_explicit else dict(payload)
+        return _auth_request(self, "POST", path if path.startswith("/") else "/" + path, data)
 
     def get_schema(self) -> dict[str, Any]:
         """Fetch the semantic schema JSON from PGBHub."""
@@ -1510,11 +1740,19 @@ class AsyncPGBHubClient:
         endpoint: Optional[str] = None,
         database: Optional[str] = None,
         project_id: Optional[str] = None,
+        timeout: float = 30.0,
+        max_retries: int = 2,
+        retry_delay: float = 0.3,
     ):
-        self.api_key = api_key or os.environ.get("PGBHUB_API_KEY")
-        self.endpoint = (endpoint or os.environ.get("PGBHUB_ENDPOINT", "https://cloud.pgbhub.com")).rstrip("/")
-        self.database = database or os.environ.get("PGBHUB_DATABASE", "postgres")
+        self.api_key = api_key or os.environ.get("PGBHUB_API_KEY") or os.environ.get("PGBHUB_PUBLISHABLE_KEY")
         self.project_id = project_id or os.environ.get("PGBHUB_PROJECT_ID")
+        self.endpoint = _resolve_endpoint(endpoint, self.project_id)
+        explicit_db = database or os.environ.get("PGBHUB_DATABASE")
+        self.database = explicit_db or "postgres"
+        self.database_explicit = bool(explicit_db)
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
         self.actions = AsyncActionsProxy(self)
         self.functions = AsyncFunctionsClient(self)
         self.auth = AsyncAuthClient(self)
@@ -1550,16 +1788,9 @@ class AsyncPGBHubClient:
             return res.json()
 
     async def request(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Make an authenticated async request to PGBHub."""
-        url = f"{self.endpoint}{path if path.startswith('/') else '/' + path}"
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        data = {**payload, "dbname": self.database}
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            res = await http.post(url, json=data, headers=headers)
-            res.raise_for_status()
-            return res.json()
+        """Make an authenticated async POST to PGBHub (see PGBHubClient.request)."""
+        data = {**payload, "dbname": self.database} if self.database_explicit else dict(payload)
+        return await _auth_request_async(self, "POST", path if path.startswith("/") else "/" + path, data)
 
     async def get_schema(self) -> dict[str, Any]:
         """Fetch the semantic schema JSON asynchronously."""

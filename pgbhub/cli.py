@@ -11,16 +11,16 @@ from pgbhub.client import PGBHubClient
 def main():
     parser = argparse.ArgumentParser(description="PGBHub Python CLI — Schema inspection and Pydantic model codegen")
     parser.add_argument("command", nargs="?", default="pull", choices=["pull", "inspect"], help="Command to run")
-    parser.add_argument("--endpoint", default="https://cloud.pgbhub.com", help="PGBHub Cloud endpoint")
+    parser.add_argument("--endpoint", default=None, help="PGBHub endpoint (default: PGBHUB_ENDPOINT, or the project address from PGBHUB_PROJECT_ID)")
     parser.add_argument("--key", help="PGBHub API Key")
-    parser.add_argument("--db", default="postgres", help="Target database name")
+    parser.add_argument("--db", default=None, help="Target database name (default: the one the key belongs to)")
     parser.add_argument("--out", default="models_pgbhub.py", help="Output python models file")
 
     args = parser.parse_args()
 
     client = PGBHubClient(api_key=args.key, endpoint=args.endpoint, database=args.db)
 
-    print(f"📡 Connecting to PGBHub at {args.endpoint} (db: {args.db})...")
+    print(f"📡 Connecting to PGBHub at {client.endpoint}...")
     try:
         schema = client.get_schema()
 
