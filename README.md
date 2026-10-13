@@ -68,7 +68,7 @@ Everything can come from the environment, so the same code runs anywhere:
 |---|---|---|
 | Key | `api_key` | `PGBHUB_API_KEY` (or `PGBHUB_PUBLISHABLE_KEY`) |
 | Project | `project_id` | `PGBHUB_PROJECT_ID` |
-| Address | `endpoint` | `PGBHUB_ENDPOINT` or `PGBHUB_PROJECT_URL` (default: the project address, else `https://cloud.pgbhub.com`) |
+| Address | `endpoint` | `PGBHUB_ENDPOINT` or `PGBHUB_PROJECT_URL` (default: the project address, else `https://console.pgbhub.com`) |
 | Domain | | `PGBHUB_PROJECT_DOMAIN` (default `pgbhub.app`) |
 | Database | `database` | `PGBHUB_DATABASE` (sent only when set) |
 | Timeout / retries | `timeout=30`, `max_retries=2`, `retry_delay=0.3` | |

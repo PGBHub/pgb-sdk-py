@@ -39,7 +39,7 @@ class TestEndpoint(unittest.TestCase):
     def test_project_id_selects_the_project_address(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(c.PGBHubClient(project_id="shop").endpoint, "https://shop.pgbhub.app")
-            self.assertEqual(c.PGBHubClient().endpoint, "https://cloud.pgbhub.com")
+            self.assertEqual(c.PGBHubClient().endpoint, "https://console.pgbhub.com")
 
     def test_explicit_endpoint_and_domain_override(self):
         with patch.dict(os.environ, {"PGBHUB_PROJECT_DOMAIN": "example.test"}, clear=True):

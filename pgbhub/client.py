@@ -500,7 +500,7 @@ def _resolve_endpoint(endpoint: Optional[str], project_id: Optional[str]) -> str
         endpoint
         or os.environ.get("PGBHUB_ENDPOINT")
         or os.environ.get("PGBHUB_PROJECT_URL")
-        or (f"https://{project_id}.{domain}" if project_id else "https://cloud.pgbhub.com")
+        or (f"https://{project_id}.{domain}" if project_id else "https://console.pgbhub.com")
     )
     return chosen.rstrip("/")
 
