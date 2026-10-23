@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.0
+
+- Mail: `client.mail.send(to, subject, text, html=None, from_addr=None, reply_to=None)` (and the async twin). `reply_to` is sent as `reply_to`, only when set. The result always has `message_id`, filled from `mail_id` on an older server.
+- Mail: a failed send raises `PGBHubError` with `status_code` and `code`; with no mail provider configured that is 503 and `MAIL_PROVIDER_UNAVAILABLE` (exported as a constant). Sends are never retried.
+- `client.mail` is now the mail client. A table named `mail` is still reachable with `client.table("mail")`.
+
 ## 1.1.0
 
 **Fixes (these affect existing apps)**

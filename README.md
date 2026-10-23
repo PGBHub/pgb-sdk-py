@@ -117,6 +117,27 @@ auth.get_settings()  # which methods are on, password policy, providers
 
 One-time codes and links are only ever emailed; the API never returns them. `redirect_to` must be allowed in the project's auth settings. `AsyncPGBHubClient().auth` has the same methods, awaitable.
 
+## Mail
+
+```python
+from pgbhub import PGBHubError, MAIL_PROVIDER_UNAVAILABLE
+
+try:
+    sent = client.mail.send(
+        "alex@example.com",
+        "Your receipt",
+        "Thanks for your order.",
+        html="<p>Thanks for your order.</p>",
+        reply_to="support@acme.dev",  # optional: one address for the Reply-To header
+    )
+    print(sent["message_id"])
+except PGBHubError as e:
+    if e.code == MAIL_PROVIDER_UNAVAILABLE:  # 503: no mail provider configured right now
+        ...
+```
+
+Sending needs the project's **secret key**. `reply_to` is a single address: line breaks, commas and semicolons are refused with a 400. `message_id` identifies the sent message (on an older server it is filled from `mail_id`). `from_addr` sets the sender. `AsyncPGBHubClient().mail.send(...)` is the same, awaitable.
+
 ## Actions
 
 ```python

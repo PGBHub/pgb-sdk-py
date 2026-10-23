@@ -927,6 +927,82 @@ class AsyncStorageClient:
         return await self.get_file(file_path)
 
 
+MAIL_PROVIDER_UNAVAILABLE = "MAIL_PROVIDER_UNAVAILABLE"
+"""`PGBHubError.code` when the platform has no mail provider configured (HTTP 503)."""
+
+
+def _mail_body(
+    to: str,
+    subject: str,
+    text: str,
+    html: Optional[str],
+    from_addr: Optional[str],
+    reply_to: Optional[str],
+) -> dict[str, Any]:
+    if not isinstance(to, str):
+        raise TypeError("mail.send() takes one recipient address as a string")
+    body: dict[str, Any] = {"to": to, "subject": subject, "text": text}
+    if html is not None:
+        body["html"] = html
+    if from_addr is not None:
+        body["from"] = from_addr
+    if reply_to:
+        body["reply_to"] = reply_to
+    return body
+
+
+def _mail_result(data: Any) -> dict[str, Any]:
+    result = dict(data) if isinstance(data, dict) else {}
+    if result.get("message_id") is None and result.get("mail_id") is not None:
+        result["message_id"] = result["mail_id"]
+    return result
+
+
+class MailClient:
+    """Transactional mail (`client.mail`). Sending needs the project's
+    secret key. A failed send raises `PGBHubError`; with no mail provider
+    configured that is status 503 and code `MAIL_PROVIDER_UNAVAILABLE`."""
+
+    def __init__(self, client: PGBHubClient):
+        self._client = client
+
+    def send(
+        self,
+        to: str,
+        subject: str,
+        text: str,
+        html: Optional[str] = None,
+        from_addr: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Send one email. `reply_to` is a single address for the Reply-To
+        header (line breaks, commas and semicolons are refused with 400).
+        Returns the server's result with `message_id` set (filled from
+        `mail_id` on an older server)."""
+        body = _mail_body(to, subject, text, html, from_addr, reply_to)
+        return _mail_result(_auth_request(self._client, "POST", "/mail/send", body))
+
+
+class AsyncMailClient:
+    """Async counterpart of MailClient."""
+
+    def __init__(self, client: AsyncPGBHubClient):
+        self._client = client
+
+    async def send(
+        self,
+        to: str,
+        subject: str,
+        text: str,
+        html: Optional[str] = None,
+        from_addr: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """See MailClient.send."""
+        body = _mail_body(to, subject, text, html, from_addr, reply_to)
+        return _mail_result(await _auth_request_async(self._client, "POST", "/mail/send", body))
+
+
 class FunctionsClient:
     """Synchronous client for invoking and managing PGBHub Serverless Cloud Functions."""
 
@@ -1640,6 +1716,7 @@ class PGBHubClient:
         self.functions = FunctionsClient(self)
         self.auth = AuthClient(self)
         self.storage = StorageClient(self)
+        self.mail = MailClient(self)
         self.cron = CronClient(self)
         self.jobs = JobsClient(self)
         self.queues = QueuesClient(self)
@@ -1757,6 +1834,7 @@ class AsyncPGBHubClient:
         self.functions = AsyncFunctionsClient(self)
         self.auth = AsyncAuthClient(self)
         self.storage = AsyncStorageClient(self)
+        self.mail = AsyncMailClient(self)
         self.cron = AsyncCronClient(self)
         self.jobs = AsyncJobsClient(self)
         self.queues = AsyncQueuesClient(self)

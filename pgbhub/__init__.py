@@ -6,6 +6,9 @@ from pgbhub.client import (
     ActionResponse,
     PGBHubError,
     PGBHubAuthError,
+    MailClient,
+    AsyncMailClient,
+    MAIL_PROVIDER_UNAVAILABLE,
     PGBHub,
     pgb,
 )
@@ -16,6 +19,9 @@ __all__ = [
     "ActionResponse",
     "PGBHubError",
     "PGBHubAuthError",
+    "MailClient",
+    "AsyncMailClient",
+    "MAIL_PROVIDER_UNAVAILABLE",
     "PGBHub",
     "pgb",
 ]
