@@ -1,14 +1,14 @@
 # Changelog
 
-## 1.2.0
+## 0.1.0 (unreleased)
+
+First release; not yet published.
 
 - Mail: `client.mail.send(to, subject, text, html=None, from_addr=None, reply_to=None)` (and the async twin). `reply_to` is sent as `reply_to`, only when set. The result always has `message_id`, filled from `mail_id` on an older server.
 - Mail: a failed send raises `PGBHubError` with `status_code` and `code`; with no mail provider configured that is 503 and `MAIL_PROVIDER_UNAVAILABLE` (exported as a constant). Sends are never retried.
 - `client.mail` is now the mail client. A table named `mail` is still reachable with `client.table("mail")`.
 
-## 1.1.0
-
-**Fixes (these affect existing apps)**
+**Fixes**
 - A project id alone now targets `https://<project>.pgbhub.app`; the default was the shared cloud address, and docs pointed at `console.pgbhub.com`. Override with `PGBHUB_PROJECT_DOMAIN`.
 - A database name is only sent when you configure one. Project keys cannot use the default `postgres` name.
 - Data calls (`client.table(...)`, `request()`) raise `PGBHubError` with the server's message instead of a bare `httpx.HTTPStatusError`.
