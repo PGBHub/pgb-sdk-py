@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0 (unreleased)
+
+**New**
+- Storage: private buckets and signed URLs, sync and async. `client.storage.create_signed_url(bucket, path, method="GET", expires_in=None, content_type=None)` mints a GET or PUT URL for one object (`POST /storage/sign`, secret key). `upload_to_signed_url(url, body, content_type)` uploads to a signed PUT URL without an API key. `create_bucket(name, visibility="public")` creates a public or private bucket. `set_bucket_visibility(name, visibility, confirm_public=False)` changes it; going public raises `ValueError` unless `confirm_public=True`.
+- README: a private bucket's objects need the secret key or a signed URL; their public URLs answer 404.
+- `StorageClient` and `AsyncStorageClient` are exported from `pgbhub`.
+
 ## 0.1.0 (unreleased)
 
 First release; not yet published.

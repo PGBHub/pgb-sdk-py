@@ -138,6 +138,41 @@ except PGBHubError as e:
 
 Sending needs the project's **secret key**. `reply_to` is a single address: line breaks, commas and semicolons are refused with a 400. `message_id` identifies the sent message (on an older server it is filled from `mail_id`). `from_addr` sets the sender. `AsyncPGBHubClient().mail.send(...)` is the same, awaitable.
 
+## Storage: private buckets and signed URLs
+
+Buckets are **public** by default. A **private** bucket's objects are readable only with the project's
+**secret** key (`pgb_sec_...`), by project members in the console, or through a signed URL. Publishable keys
+(`pgb_pub_...`) never read private objects, and a private object's public URL (`/storage/<bucket>/<path>`)
+answers 404 to anyone without the secret key: hand out a signed URL instead.
+
+These calls need the secret key, so make them on a server:
+
+```python
+client = PGBHubClient(project_id="my-project", api_key=os.environ["PGB_SECRET_KEY"])
+
+client.storage.create_bucket("receipts", visibility="private")  # visibility defaults to "public"
+
+# A 15-minute download link for one object (at most 24 hours for GET).
+link = client.storage.create_signed_url("receipts", "2026/inv-1.pdf", expires_in=900)
+print(link["url"], link["expires_at"])
+
+# An upload link (at most 1 hour). With content_type, the upload must use exactly that type.
+put = client.storage.create_signed_url("receipts", "2026/inv-2.pdf", method="PUT", content_type="application/pdf")
+client.storage.upload_to_signed_url(put["url"], pdf_bytes, "application/pdf")  # no API key: the URL is the credential
+
+client.storage.set_bucket_visibility("receipts", "private")
+client.storage.set_bucket_visibility("assets", "public", confirm_public=True)  # ValueError without confirm_public
+```
+
+- `create_signed_url` calls `POST /storage/sign` on the project's address (`project_id=...` or a
+  `https://<slug>.pgbhub.app` endpoint). `create_bucket` and `set_bucket_visibility` address the project by
+  `project_id`, or by the slug in that endpoint.
+- Anyone holding a signed URL can use it until it expires. A GET URL also answers HEAD.
+- Without a bound `content_type`, a signed PUT refuses HTML, SVG, XML and JavaScript (415).
+- Making a bucket private takes effect within seconds, but copies a browser or the CDN already fetched are not
+  recalled.
+- `AsyncPGBHubClient().storage` has the same methods, awaitable.
+
 ## Actions
 
 ```python

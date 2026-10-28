@@ -842,11 +842,91 @@ class AsyncAuthClient(_AuthBase):
             raise
 
 
+_VISIBILITIES = ("public", "private")
+
+
+def _project_ref(client: Any) -> str:
+    """The project bucket calls address: `project_id` when configured,
+    otherwise the slug in a https://<slug>.pgbhub.app endpoint."""
+    if getattr(client, "project_id", None):
+        return str(client.project_id)
+    domain = os.environ.get("PGBHUB_PROJECT_DOMAIN") or "pgbhub.app"
+    host = (urllib.parse.urlparse(client.endpoint).hostname or "").lower()
+    suffix = f".{domain}"
+    if host.endswith(suffix):
+        slug = host[: -len(suffix)]
+        if slug and "." not in slug:
+            return slug
+    raise ValueError(
+        "Bucket management needs the project: pass project_id=..., set PGBHUB_PROJECT_ID, "
+        "or use the project's address (https://<slug>.pgbhub.app) as the endpoint."
+    )
+
+
+def _buckets_path(client: Any, bucket: Optional[str] = None, action: str = "") -> str:
+    path = f"/api/v1/projects/{urllib.parse.quote(_project_ref(client), safe='')}/storage/buckets"
+    if bucket is not None:
+        path += f"/{urllib.parse.quote(bucket, safe='')}"
+    return path + action
+
+
+def _sign_body(bucket: str, path: str, method: str, expires_in: Optional[int], content_type: Optional[str]) -> dict[str, Any]:
+    verb = (method or "GET").upper()
+    if verb not in ("GET", "PUT"):
+        raise ValueError(f"method must be 'GET' or 'PUT', not {method!r}")
+    if content_type and verb != "PUT":
+        raise ValueError("content_type applies only to PUT (upload) URLs")
+    body: dict[str, Any] = {"bucket": bucket, "path": path.lstrip("/"), "method": verb}
+    if expires_in is not None:
+        body["expires_in"] = int(expires_in)
+    if content_type:
+        body["content_type"] = content_type
+    return body
+
+
+def _create_bucket_body(name: str, visibility: str) -> dict[str, Any]:
+    if visibility not in _VISIBILITIES:
+        raise ValueError(f"visibility must be 'public' or 'private', not {visibility!r}")
+    return {"name": name, "visibility": visibility}
+
+
+def _visibility_body(name: str, visibility: str, confirm_public: bool) -> dict[str, Any]:
+    if visibility not in _VISIBILITIES:
+        raise ValueError(f"visibility must be 'public' or 'private', not {visibility!r}")
+    if visibility == "public":
+        if confirm_public is not True:
+            raise ValueError(
+                f"Making bucket '{name}' public exposes every object in it to anyone with its URL. "
+                "Pass confirm_public=True to proceed."
+            )
+        return {"visibility": "public", "confirm_public": True}
+    return {"visibility": "private"}
+
+
+def _signed_upload_target(client: Any, url: str) -> str:
+    return f"{client.endpoint}{url}" if url.startswith("/") else url
+
+
+def _upload_payload(body: Any) -> bytes:
+    if isinstance(body, str):
+        return body.encode("utf-8")
+    return bytes(body)
+
+
+def _upload_result(status: int, text: str, headers: Any, data: Any) -> dict[str, Any]:
+    if status >= 400:
+        _raise_for_response(status, data, text, headers)
+    return data if isinstance(data, dict) else {}
+
+
 class StorageClient:
-    """Storage client (`client.storage`) — currently covers file/media
-    download only; upload/list/delete are not yet exposed in the Python
-    SDK (tracked as follow-up breadth work, matching the TS SDK's
-    existing coverage)."""
+    """Storage client (`client.storage`): file/media download, signed URLs and
+    bucket visibility.
+
+    Buckets are public unless made private. A private bucket's objects are
+    readable only with the project's secret key (`pgb_sec_...`), by project
+    members in the console, or through a signed URL; publishable keys never
+    read them."""
 
     def __init__(self, client: PGBHubClient):
         self._client = client
@@ -898,6 +978,64 @@ class StorageClient:
         """
         return self.get_file(file_path)
 
+    def create_signed_url(
+        self,
+        bucket: str,
+        path: str,
+        method: str = "GET",
+        expires_in: Optional[int] = None,
+        content_type: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """A signed URL for one object: GET to download (also from a private
+        bucket), PUT to upload. Calls POST /storage/sign on the project's
+        address and needs the project's secret key, so call it on a server
+        and hand only the URL out. Returns {"url", "path", "method", "bucket",
+        "file_path", "expires_in", "expires_at", "content_type",
+        "bucket_visibility"}. Default lifetime 900 s; at most 86400 s for GET
+        and 3600 s for PUT."""
+        return _auth_request(self._client, "POST", "/storage/sign", _sign_body(bucket, path, method, expires_in, content_type))
+
+    def upload_to_signed_url(self, url: str, body: Any, content_type: str = "application/octet-stream") -> dict[str, Any]:
+        """PUT bytes (or a str) to a signed upload URL. No API key is sent: the
+        URL is the credential. If the URL was minted with a content_type, pass
+        the same one. Never retried. Returns {"success", "bucket", "file_path", "size_bytes"}."""
+        target = _signed_upload_target(self._client, url)
+        payload = _upload_payload(body)
+        headers = {"Content-Type": content_type, "Accept": "application/json"}
+        timeout = _client_timeout(self._client, 30.0)
+        try:
+            if httpx is not None:
+                with httpx.Client(timeout=timeout) as http:
+                    res = http.put(target, content=payload, headers=headers)
+                status, text, res_headers = res.status_code, res.text, getattr(res, "headers", {})
+            else:
+                req = urllib.request.Request(target, data=payload, headers=headers, method="PUT")
+                try:
+                    with urllib.request.urlopen(req, timeout=timeout) as resp:
+                        status, text, res_headers = resp.status, resp.read().decode("utf-8"), resp.headers
+                except urllib.error.HTTPError as exc:
+                    status, text, res_headers = exc.code, exc.read().decode("utf-8", "replace"), exc.headers
+        except Exception as exc:
+            raise PGBHubError(0, f"Signed upload failed (network error): {exc}", code="network_error") from exc
+        try:
+            data = json.loads(text) if text else {}
+        except Exception:
+            data = {}
+        return _upload_result(status, text, res_headers, data)
+
+    def create_bucket(self, name: str, visibility: str = "public") -> dict[str, Any]:
+        """Create a bucket, public by default or "private". Needs the project's
+        secret key (or an account key with storage rights)."""
+        return _auth_request(self._client, "POST", _buckets_path(self._client), _create_bucket_body(name, visibility))
+
+    def set_bucket_visibility(self, name: str, visibility: str, confirm_public: bool = False) -> dict[str, Any]:
+        """Make a bucket "private" or "public". Going private is enforced within
+        seconds, but copies a browser or the CDN already fetched are not
+        recalled. Going public exposes every object, so it needs
+        confirm_public=True; without it this raises ValueError and sends nothing."""
+        body = _visibility_body(name, visibility, confirm_public)
+        return _auth_request(self._client, "POST", _buckets_path(self._client, name, "/visibility"), body)
+
 
 class AsyncStorageClient:
     """Async counterpart of StorageClient."""
@@ -925,6 +1063,42 @@ class AsyncStorageClient:
     async def get_media(self, file_path: str, **_transform_options: Any) -> dict[str, Any]:
         """See StorageClient.get_media — thin alias, no server-side transform support yet."""
         return await self.get_file(file_path)
+
+    async def create_signed_url(
+        self,
+        bucket: str,
+        path: str,
+        method: str = "GET",
+        expires_in: Optional[int] = None,
+        content_type: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """See StorageClient.create_signed_url."""
+        return await _auth_request_async(self._client, "POST", "/storage/sign", _sign_body(bucket, path, method, expires_in, content_type))
+
+    async def upload_to_signed_url(self, url: str, body: Any, content_type: str = "application/octet-stream") -> dict[str, Any]:
+        """See StorageClient.upload_to_signed_url."""
+        target = _signed_upload_target(self._client, url)
+        payload = _upload_payload(body)
+        headers = {"Content-Type": content_type, "Accept": "application/json"}
+        try:
+            async with httpx.AsyncClient(timeout=_client_timeout(self._client, 30.0)) as http:
+                res = await http.put(target, content=payload, headers=headers)
+        except Exception as exc:
+            raise PGBHubError(0, f"Signed upload failed (network error): {exc}", code="network_error") from exc
+        try:
+            data = res.json()
+        except Exception:
+            data = {}
+        return _upload_result(res.status_code, res.text, getattr(res, "headers", {}), data)
+
+    async def create_bucket(self, name: str, visibility: str = "public") -> dict[str, Any]:
+        """See StorageClient.create_bucket."""
+        return await _auth_request_async(self._client, "POST", _buckets_path(self._client), _create_bucket_body(name, visibility))
+
+    async def set_bucket_visibility(self, name: str, visibility: str, confirm_public: bool = False) -> dict[str, Any]:
+        """See StorageClient.set_bucket_visibility."""
+        body = _visibility_body(name, visibility, confirm_public)
+        return await _auth_request_async(self._client, "POST", _buckets_path(self._client, name, "/visibility"), body)
 
 
 MAIL_PROVIDER_UNAVAILABLE = "MAIL_PROVIDER_UNAVAILABLE"
